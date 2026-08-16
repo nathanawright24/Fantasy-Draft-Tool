@@ -52,6 +52,16 @@ Settled in the scoping conversation. These override the open items they correspo
 | R13 | College bias | Build the player→college mapping. **Label every row as model recall, not data** | draft-tool §9.5 |
 | R14 | Portability | Every analysis layer toggleable via `available` / `applies` flag pair (§4.2). Composite renormalizes; warnings self-disable | — |
 | R15 | Reference ADP | Selectable source, not Sleeper-assumed (§4.3). `is_sleeper=False` disables live polling | R4 |
+| R16 | Composite unit | **Value over replacement in PPR points**, replacing within-position percentile entirely (§12.1) | §6.5 |
+| R17 | Replacement level | Last starter at each position, flex-aware | — |
+| R18 | Bonus layer | Separate weight, but **in points, not percentile** | §6.2 |
+| R19 | Survival curve | Unbounded lognormal fit from the NFFC triple, min/max as extreme quantiles of *n* draws (§12.2) | §4.4 |
+| R20 | Capacity | **Monte Carlo the intervening picks discretely** (§12.3) | §7 |
+| R21 | Hazard combination | Per-pick Bernoulli — subsumed by R20's simulation step | §7 |
+| R22 | Kickers | Dropped from `ROSTER_TARGET`. Take one by feel at 188 | §8 |
+| R23 | Raw inputs | Committed to git — clean clone must test green | — |
+| R24 | Sequencing | Pipeline correctness (R16–R21) **before any UI work** | §10 |
+| R25 | Backtest | Replay 2024 + 2025 pick-by-pick and score availability calibration (§12.5) | — |
 
 ---
 
@@ -577,6 +587,10 @@ Per GUARDRAILS §6, and required before any of these numbers are displayed:
 
 Two–three weeks is comfortable. Suggested sequencing:
 
+**⚠ Superseded for the current work block by §12.** The steps below describe the original
+build, which is complete. The next block is §12.1 → §12.2 → §12.3 → §12.4 → §12.5, in that order,
+with **no UI work until the backtest passes (R24)**. Steps 7 and 8 below still apply afterward.
+
 0. **Day 1 — `config.py` first.** League config, layer toggles, reference-ADP selector, path
    resolution. Everything downstream reads from it, so writing it last means retrofitting.
 1. **Days 1–3 — data layer.** Load props + factor grids, backfill `nfl_team`, normalize and
@@ -618,3 +632,138 @@ Carried from the handoffs, none blocking:
 9. **TE market coverage is zero.** Possibly a permanent constraint.
 10. ~~Settings still inferred~~ — **RESOLVED 2026-08-16 by owner: single QB, one kicker slot.**
     Both prior inferences were correct. No valuation adjustment needed.
+
+---
+
+## 12. Post-review corrections
+
+Repo reviewed 2026-08-16 at ~2,000 lines of Python. `join_report.txt` clean, 26/26 tests
+passing, every spec section implemented rather than stubbed. Three defects found by running the
+code against the real `player_master.csv`, in severity order. **These are the whole of the next
+work block; nothing else ships first (R24).**
+
+### 12.1 🚨 The composite is not cross-positionally comparable — fix first
+
+Every `_norm` column is `groupby("position").rank(pct=True)`, so the best player at each position
+scores ~100 regardless of value. Observed output:
+
+| Player | Pos | composite | `ppr_base` |
+|---|---|---|---|
+| Ja'Marr Chase | WR | 99.7 | 304 |
+| **Trey McBride** | TE | **99.4** | **212** |
+| Jahmyr Gibbs | RB | 99.3 | 298 |
+| **Josh Allen** | QB | 97.5 | **368** |
+| **Colston Loveland** | TE | **97.2** | **182** |
+| Justin Jefferson | WR | 96.2 | 252 |
+
+Loveland at 182 projected points outranks Jefferson at 252; Josh Allen leads the board by 65
+points and sits 7th. For a tool whose only job is "which position here?", this is fatal.
+
+**Fix (R16/R17):** replace percentile with **value over replacement in PPR points**, replacement
+= last starter at each position, flex-aware. Percentiles may remain as expandable display detail;
+they must not drive the sort.
+
+**Also kills the bonus layer as currently wired.** The §6.2 insight was a *cross-positional*
+shift — QBs gain 8–13 points, WRs ~1. Within-position percentile erases exactly that and leaves
+25% of the weight re-ranking QBs against each other by rushing volume. Per R18, `bonus_est_ppr`
+keeps its own weight but enters **in points**.
+
+### 12.2 🚨 The survival baseline is degenerate and the manager-priors layer is a no-op
+
+A triangular distribution's support is `[adp_min, adp_max]`, so `survival_baseline` is exactly
+1.0 or exactly 0.0 for any player whose target pick falls outside the observed range. Measured at
+pick 44 targeting 53:
+
+| Player | baseline | hazard | result |
+|---|---|---|---|
+| Sam LaPorta | 1.000 | 19.2 | 0.995 |
+| Dalton Kincaid | 1.000 | 23.9 | 0.995 |
+| Mark Andrews | 1.000 | 53.2 | 0.995 |
+| Trey McBride | 0.000 | 182.4 | 0.005 |
+
+`1.0 ** 19.2 == 1.0`. The entire league-specific edge — three TE-hungry managers picking twice
+each in precisely that window — moves the number by **nothing**, and 0.995 is just the clip
+ceiling. This is the single most decision-relevant defect in the build, because the pick-53 fork
+depends on it.
+
+**Fix (R19):** unbounded lognormal, not triangular and **not beta-PERT** — PERT's support is also
+`[min, max]` and reproduces the identical hard clip. Treat `adp_min` / `adp_max` as the observed
+extremes of *n* draws: expected quantiles ≈ `1/(n+1)` and `n/(n+1)`, so at n=51 they bracket
+roughly 1.9% and 98.1%. Fit a lognormal whose median matches `adp_value` and whose implied
+quantiles bracket the observed range.
+
+Side benefit worth keeping: **small `adp_n` widens the curve automatically**, which turns the
+`ADP_MIN_N = 15` cliff into a continuous function of sample size. Trevor Etienne's 6 drafts
+produce an appropriately vague curve instead of a binary exclusion.
+
+**Independent of distribution choice — condition on the present:**
+
+```
+P(survive to target | survived to now) = S(target) / S(as_of_pick)
+```
+
+Currently absent. That single division fixes a large share of §12.3 on its own.
+
+### 12.3 🚨 No capacity constraint
+
+At pick 44 with **8** intervening picks, the model expects **159.1** players to be taken — 48.7
+of them TEs. Survival is computed marginally per player with nothing tying total departures to
+the number of picks that actually occur.
+
+**Fix (R20/R21): simulate the intervening picks discretely.** Each intervening manager takes
+exactly one player — sampled from a softmax over available players weighted by ADP position,
+that manager's positional appetite at that round, and their team/college bias — so exactly *k*
+players leave in *k* picks, by construction.
+
+The reason this beats a post-hoc rescale is **substitution**, which is the actual question at
+pick 44: if Nick takes McBride, Dylan likely no longer needs a TE. A marginal model structurally
+cannot represent "only one of these three TEs goes." Monte Carlo represents it for free, and it
+subsumes R21 — the per-pick Bernoulli *is* the simulation step, not a second mechanism.
+
+Cost is negligible: 8 picks × ~2,000 sims. Output is a distribution rather than a point estimate,
+which also gives §12.5 a real scoring target.
+
+### 12.4 Smaller items
+
+1. **No kickers exist.** All 417 rows are QB/RB/WR/TE while `ROSTER_TARGET` includes `K: 1`.
+   Per R22, drop K from the target — one gets taken by feel at 188. Update `ROSTER_TARGET`,
+   `_w10`'s cap logic, and the §8 "exactly 16 picks" arithmetic accordingly.
+2. **Raw inputs untracked (R23).** Without `ADP.tsv` and `sleeper_adp_ppr_*.csv`, 6 of 26 tests
+   error on a clean clone. Commit them — ~40KB, nothing sensitive, and draft-morning re-scrapes
+   become diffable.
+3. **Path drift.** `all_draft_picks_2022-2025.csv` and the HTML boards sit at repo root while
+   `config.ALL_DRAFT_PICKS_PATH` expects `drafts/`. Move the files or fix the constant; don't
+   leave them disagreeing.
+4. **The `adp_n` gate runs before the DEF drop**, so ~20 team-defense rows generate low-sample
+   flags for rows that get discarded anyway. Reorder so the join report stays readable — its
+   value is entirely in being eyeballed, and 20 lines of noise is 20 lines nobody reads.
+
+### 12.5 Backtest before draft day (R25)
+
+`all_draft_picks_2022-2025.csv` holds 611 real picks. Replay 2024 and 2025 pick-by-pick, asking
+the availability model at each of the owner's picks for survival probabilities, and score them
+against what actually happened — **Brier score, plus a calibration curve in probability
+deciles.** Well-calibrated means players given 70% survived about 70% of the time.
+
+Two constraints on interpretation:
+
+- **Treat it as a sanity check on calibration, not a tuning target.** Two seasons of one league
+  is a small sample and overfitting to it is easy.
+- **The scoring rules changed.** A miss on QB timing in 2024 may reflect the old 4-point passing
+  TD rather than a broken model. Expect QB and TE calibration to look worse than RB/WR, and do
+  not "correct" for it.
+
+What this genuinely tests is the *mechanism* — whether the manager-priors hazard, the substitution
+logic, and the survival curve produce sane numbers against real behaviour. Given §12.2, the
+current answer is almost certainly no, which is exactly why the backtest runs after the fixes and
+before the dry run.
+
+### 12.6 What the review found working
+
+Recorded so it doesn't get refactored away: `managers_in_range` vs `managers_until_next_owner_pick`
+kept deliberately separate; `team_bias.csv` computed from 611 historical picks rather than
+hand-transcribed, so it ports to another league automatically; `NAME_ALIASES` catching
+`Cam Ward` → `cameron ward` and `Chig Okonkwo` → `chigoziem okonkwo`, which suffix-stripping alone
+would miss; survival clipped to [0.005, 0.995] so no cell ever renders false certainty; and the
+`BONUS_SIGMA_*` comments stating plainly that QB and TE cannot reach their anchors rather than
+fudging the sigmas to pretend otherwise.
