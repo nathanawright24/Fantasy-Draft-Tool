@@ -1,0 +1,12 @@
+analysis_id,source,analyst,source_date,population,position,archetype,archetype_label_in_source,outcome,outcome_definition,rate_pct_published,probability,archetype_n_inferred,event_count_inferred,note
+WR_ARCHETYPE_HIT_RATES_2020_2027,Analyst archetype outcome table (screenshot),J. Analyst,2027-08-13,"WRs drafted inside the top 36 WRs of ADP, 2020 onward (n=180)",WR,Prime WR1,Prime WR1s,boomed,"18+ PPR PPG, or beat ADP by 10 or more positional spots",33.80,0.338,71,24,archetype n reverse-engineered from the exact published percentage
+
+# LEGEND - delete this block and the example row before use
+"# One row per archetype x outcome, plus the pooled column as archetype=ALL."
+# Outcomes are NOT mutually exclusive and do NOT sum to 100%. Never normalise them.
+# Capture outcome_definition VERBATIM - thresholds moved between the 2026 WR and RB sheets
+"#   (WR busted = lost 12+, RB busted = lost 10+). Cross-position comparison needs this."
+"# archetype_n_inferred: find the smallest n making every % in the column exact, then check"
+#   the ns sum to the stated population. In 2026 both positions reconciled perfectly.
+"# If the grid uses an archetype the table does not back-test, add a row with blank rates"
+#   and say so - do not silently substitute a neighbouring cohort without flagging it.

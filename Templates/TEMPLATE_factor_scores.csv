@@ -1,0 +1,13 @@
+analysis_id,source,analyst,source_date,adp_basis,season,position,adp_position_rank,player_name_source,player_name_normalized,nfl_team,archetype,tier_color,tier_rank,injury_concern,n_green,n_yellow,n_orange,n_red,n_uncounted,n_cells_counted,n_green_published,n_yellow_published,n_orange_published,n_red_published,factor_score_recomputed,factor_score_published,factor_score_matches_published,factor_score_rank,adp_minus_score_rank,note
+WR_FACTOR_GRID_2027,Analyst colour-coded WR factor grid (screenshots),J. Analyst,2027-08-13,"Underdog Fantasy ADP (best-ball), 2027",2027,WR,1,Ja'Marr Chase,Ja'Marr Chase,CIN,Prime WR1,,,Minimal Concern,9,1,0,2,0,12,9,1,0,2,42,42,Y,1,0,
+
+# LEGEND - delete this block and the example row before use
+# One row per player. n_* = counted from the grid; n_*_published = printed in the scoring table.
+"# They MUST agree. matches_published=N means one of two things, and the cell totals tell you which:"
+#   cells differ  -> the analyst dropped a cell. The grid is right.
+#   cells match   -> one colour disagreement. Crop the column and look before deciding.
+# Never overwrite the published figure. Keep both and explain the gap in note.
+# factor_score is ORDINAL. Not points. Not comparable across positions.
+"# tier_color / tier_rank: only where the analyst colour-tiers the scoring-table headers (2026 TE, QB)."
+"# archetype: blank where the position has no archetype row (2026 TE, QB)."
+# adp_minus_score_rank: positive = the factors like the player more than ADP does.

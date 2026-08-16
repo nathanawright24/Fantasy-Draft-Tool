@@ -1,0 +1,27 @@
+factor,factor_group,grid_threshold,per_game_reference,paced_reference,factor_kind,possible_responses,note
+Pass Attempts,volume,576.50,33.91,576.50,binary_vs_elite,Yes / No / ?,grid uses the paced value
+Passing TDs,volume,44.63,2.63,44.63,binary_vs_elite,Yes / No / ?,grid uses the paced value
+Rush Attempts,volume,97.62,5.74,97.62,binary_vs_elite,Yes / No / ?,grid uses the paced value
+Rushing TDs,volume,0.32,0.32,5.36,binary_vs_elite,Yes / No / ?,UNIT MISMATCH: the grid prints the PER-GAME figure (0.32) where the other three volume rows use paced figures. The paced value is 5.36. Confirm which threshold was actually applied.
+Offensive Rank in PPG,situational,6.35,,,binary_vs_elite,Yes / No / ?,
+Offensive Line Rank in Pass Blocking,situational,11.54,,,binary_vs_elite,Yes / No / ?,
+Deep Ball Attempts/Game,situational,4.31,,,binary_vs_elite,Yes / No / ?,"per game, unlike the volume rows"
+Rank in QBR,situational,6.90,,,binary_vs_elite,Yes / No / ?,
+RedZone Combined Attempts,situational,6.30,,,binary_vs_elite,Yes / No / ?,"per game, presumably"
+Rank in Neutral Pace,situational,12.86,,,binary_vs_elite,Yes / No / ?,
+Rank in Pass Offense DVOA,situational,7.01,,,binary_vs_elite,Yes / No / ?,
+ADP,reference only,8.22,,,not_a_factor,n/a,Present in the reference table with an average of 8.22 but NOT used as a row in any grid
+
+COLOR LEGEND,points,response
+green,5,Yes
+yellow,3,Yes
+orange,-1,?
+red,-3,No
+
+TIER LEGEND (scoring-table header fills; no printed legend in source)
+tier_color,tier_rank,count,players
+purple,1,8,Josh Allen; Drake Maye; Joe Burrow; Caleb Williams; Justin Herbert; Trevor Lawrence; Matthew Stafford; Bo Nix
+green,2,6,Lamar Jackson; Jalen Hurts; Dak Prescott; Patrick Mahomes; Brock Purdy; Jared Goff
+yellow,3,3,Kyler Murray; Baker Mayfield; Daniel Jones
+gold,4,7,Jayden Daniels; Jordan Love; Tyler Shough; C.J. Stroud; Aaron Rodgers; Jacoby Brissett; Tua Tagovailoa
+red,5,8,Jaxson Dart; Malik Willis; Cam Ward; Sam Darnold; Bryce Young; Fernando Mendoza; Geno Smith; Shedeur Sanders

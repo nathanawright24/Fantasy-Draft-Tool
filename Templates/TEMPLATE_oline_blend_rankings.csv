@@ -1,0 +1,2 @@
+ol_blend_rank,team,team_full,source_a_name,source_a_rank,source_a_tier,source_b_name,source_b_grade,source_b_grade_scale,source_b_rank,ol_blend_score,ol_blend_tier,ol_source_gap_a_minus_b,blend_weights,tie_handling,source_a_as_of,source_b_as_of,notes
+1,DEN,"Denver Broncos   <-- EXAMPLE ROW, DELETE BEFORE USE",PFF,1,1,Mike Clay / ESPN OL unit grade,8,"1-10, higher better",1.0,1.0,1,0.0,50/50,source_b ties -> average rank,2026-08-15,2026-08-13,"unanimous #1 across PFF, Clay, and ETR/Thorn"

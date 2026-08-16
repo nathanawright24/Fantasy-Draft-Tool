@@ -1,0 +1,12 @@
+analysis_id,source,source_type,analyst,source_date,adp_basis,threshold_basis,season,position,adp_position_rank,player_name_source,player_name_normalized,nfl_team,factor,factor_group,factor_kind,league_average_reference,response,color,color_points,counts_toward_score,extraction_confidence,extraction_method
+WR_FACTOR_GRID_2027,Analyst colour-coded WR factor grid (screenshots),third_party_analyst_screenshot,J. Analyst,2027-08-13,"Underdog Fantasy ADP (best-ball), 2027",cohort average of the top 36 WRs,2027,WR,1,Ja'Marr Chase,Ja'Marr Chase,CIN,Targets,volume,binary_vs_avg,10.7,Yes,green,5,Y,high,"programmatic cell-fill sampling, validated vs published colour counts"
+
+# LEGEND - delete this block and the example row before use
+# One row per player per factor. The atomic table - every other file derives from it.
+# position: QB | RB | WR | TE. One schema for all four.
+"# adp_position_rank: the grid column header (WR1..WR45) = positional ADP rank, not overall pick."
+# nfl_team: NOT printed in these grids. Leave blank at parse time; join it from the props files.
+# factor_kind: binary_vs_avg | binary_vs_elite | more_less_same | archetype | injury.
+"# threshold_basis matters: the 2026 QB sheet used ELITE benchmarks, the others cohort averages."
+# counts_toward_score: N for any fill the analyst excludes from his own count (2026 RB purple).
+# extraction_confidence: high only if the cell was read programmatically AND the player validated.

@@ -1,0 +1,27 @@
+factor,factor_group,league_average_reference,factor_kind,possible_responses,note
+Targets,volume,137.67,binary_vs_avg,Yes / No / ?,
+Receptions,volume,97.02,binary_vs_avg,Yes / No / ?,
+Touchdowns,volume,9.49,binary_vs_avg,Yes / No / ?,
+Offensive Rank in PPG,situational,11.78,binary_vs_avg,Yes / No / ?,
+Quarterbacks Rank in QBR,situational,9.70,binary_vs_avg,Yes / No / ?,
+Rank in Team Pass Attempts,situational,11.81,binary_vs_avg,Yes / No / ?,
+Rank in Team Targets,situational,1.43,binary_vs_avg,Yes / No / ?,average of 1.43 means the cohort TE is typically his team's first or second target
+Rank in Receiving Touchdown,situational,1.38,binary_vs_avg,Yes / No / ?,"average of 1.38, i.e. usually the team leader in receiving TDs"
+Route Participation,situational,79.8%,binary_vs_avg,Yes / No / ?,
+In-line %,situational,39.0%,binary_vs_avg,Yes / No / ?,lower is generally better for a pass-catching TE; direction of the Yes/No judgment is the analyst's
+Rank in Yards per Route Run,situational,5.14,binary_vs_avg,Yes / No / ?,
+Injury/Age Concerns?,classification,MC/SC/C,injury,Minimal Concerns / Some Concern / Concerned,MC/SC/C is the legend in the Average column
+
+COLOR LEGEND,points,binary factors,injury
+green,5,Yes,(unused)
+yellow,3,Yes,Minimal Concerns
+orange,-1,?,Some Concern
+red,-3,No,Concerned
+
+TIER LEGEND (from the scoring table header cells; no printed legend in source)
+tier_color,tier_rank,count,players
+purple,1,6,Brock Bowers; Trey McBride; Colston Loveland; Tyler Warren; Sam LaPorta; Dalton Kincaid
+green,2,8,Tucker Kraft; Harold Fannin Jr.; Kyle Pitts; Travis Kelce; Mark Andrews; Jake Ferguson; Oronde Gadsden II; Kenyon Sadiq
+yellow,3,1,Pat Freiermuth
+gold,4,13,George Kittle; Isaiah Likely; Dallas Goedert; Chigoziem Okonkwo; Brenton Strange; Hunter Henry; Juwan Johnson; Dalton Schultz; T.J. Hockenson; Cade Otton; Terrance Ferguson; Mike Gesicki; Eli Stowers
+red,5,4,A.J. Barner; Greg Dulcich; Gunnar Helm; Evan Engram

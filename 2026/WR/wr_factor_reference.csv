@@ -1,0 +1,19 @@
+factor,factor_group,league_average_reference,factor_kind,possible_responses,definition
+Targets,volume,10.7,binary_vs_avg,Yes / No / ?,Projected or recent targets clear the cohort average
+Receptions,volume,7.2,binary_vs_avg,Yes / No / ?,Receptions clear the cohort average
+Touchdowns,volume,0.8,binary_vs_avg,Yes / No / ?,TDs clear the cohort average
+Offensive Rank in PPG,situational,8.94,binary_vs_avg,Yes / No / ?,Team offensive PPG rank better than cohort average rank
+Quarterbacks Rank in PFF Passing Grade,situational,10.36,binary_vs_avg,Yes / No / ?,QB PFF passing-grade rank better than average
+Team Pass Attempts,situational,594.94,binary_vs_avg,Yes / No / ?,Team pass attempts clear the average
+Highest Targeted Secondary Option,situational,103.31,more_less_same,More / Same / Less / ?,Targets absorbed by the next-most-targeted teammate; More is unfavourable
+Offensive Line Rank in Pass Blocking,situational,10.75,binary_vs_avg,Yes / No / ?,O-line pass-blocking rank better than average
+Rank in Yards per Route Run,situational,4.81,binary_vs_avg,Yes / No / ?,Player YPRR rank better than average
+Highest % Achieved in Reception Perception,situational,90th,binary_vs_avg,Yes / No / ?,Career-best Reception Perception percentile clears the 90th-percentile bar
+Archetype,classification,N/A,archetype,Prime WR1 / Prime WR2 / Breakout Candidate / Trusty Veteran,Analyst bucket; drives the hit-rate priors
+Injury/Suspension Concern?,classification,N/A,injury,Minimal Concern / Some Concern / Concerned,Analyst availability flag
+
+COLOR LEGEND,points,binary_vs_avg,more_less_same,archetype,injury
+green,5,Yes,Less,Prime WR1,(unused)
+yellow,3,Yes,Same,Prime WR2,Minimal Concern
+orange,-1,?,?,Breakout Candidate,Some Concern
+red,-3,No,More,Trusty Veteran,Concerned

@@ -1,0 +1,11 @@
+analysis_id,season,position,adp_position_rank,player_name_normalized,player_name_source,nfl_team,archetype,archetype_cohort_used,archetype_cohort_mapping,tier_color,tier_rank,injury_concern,factor_score,factor_score_rank,factor_score_normalized,adp_minus_score_rank,p_returned_on_adp,p_got_injured,p_boomed,p_busted,p_fine,prob_basis,prob_is_player_specific,caveat
+WR_PLAYER_PRIORS_2027,2027,WR,1,Ja'Marr Chase,Ja'Marr Chase,CIN,Prime WR1,Prime WR1,exact,,,Minimal Concern,42,1,1.0,0,0.5352,0.1127,0.338,0.1268,0.2254,"archetype-level base rate, 2020+ top-36-WR ADP cohort (n=71)",N,"factor_score is an ordinal composite, NOT fantasy points"
+
+# LEGEND - delete this block and the example row before use
+"# The consumable table for the draft tool: one row per player, categoricals plus probabilities."
+"# p_* are archetype base rates, so every player in an archetype shares them. Hence"
+#   prob_is_player_specific=N. Set Y only if a source gives genuinely per-player odds.
+# archetype_cohort_mapping: exact | ASSUMED (say what was substituted) | NONE (no table exists).
+# Leave p_* blank rather than inventing them. In 2026 the TE and QB sheets had no back-test at all.
+# factor_score_normalized: min-max within this file and position. Use as a tie-breaker weight only.
+# Join to the implied-props files on player_name_normalized + position + nfl_team.
