@@ -35,7 +35,13 @@ COMPARISON_ADP_PATH = DATA_EXTERNAL / "comparison_adp.csv"
 COLLEGE_BIAS_PATH = DATA_EXTERNAL / "college_bias_recall.csv"
 
 ALL_DRAFT_PICKS_PATH = DATA_DRAFTS / "all_draft_picks_2022-2025.csv"
-NFFC_ADP_RAW_PATH = FANTASY_ROOT / "ADP.tsv"
+
+# Raw ADP exports live inside Tool/ (not FANTASY_ROOT) specifically so they can be
+# committed to the Tool/ git repo (R23) -- a repo can't track files outside its own
+# tree. Re-scrape into this folder on draft morning; the old location (loose at
+# FANTASY_ROOT) is retired.
+DATA_RAW = TOOL_ROOT / "data" / "raw"
+NFFC_ADP_RAW_PATH = DATA_RAW / "ADP.tsv"
 SLEEPER_ADP_RAW_GLOB = "sleeper_adp_ppr_*.csv"
 
 POSITIONS = ["QB", "RB", "WR", "TE"]
@@ -62,9 +68,9 @@ def oline_blend_path() -> Path:
 
 
 def latest_sleeper_adp_raw_path() -> Path:
-    candidates = sorted(FANTASY_ROOT.glob(SLEEPER_ADP_RAW_GLOB))
+    candidates = sorted(DATA_RAW.glob(SLEEPER_ADP_RAW_GLOB))
     if not candidates:
-        raise FileNotFoundError(f"No file matching {SLEEPER_ADP_RAW_GLOB} in {FANTASY_ROOT}")
+        raise FileNotFoundError(f"No file matching {SLEEPER_ADP_RAW_GLOB} in {DATA_RAW}")
     # Filenames embed a date (sleeper_adp_ppr_2026-08-16.csv) -- lexical sort == date sort.
     return candidates[-1]
 
@@ -201,6 +207,13 @@ COMPARISON_ADP = {
 ADP_MIN_N = 15  # NFFC rows below this sample count are shown but excluded from survival math
 
 # ---------------------------------------------------------------------------
+# Availability model (spec Section 7, rewritten per 12.2/12.3 -- R19-R21).
+# ---------------------------------------------------------------------------
+GENERIC_LOGNORMAL_SIGMA = 0.35  # fallback dispersion when adp_value exists but min/max/n don't
+GENERIC_ADP_SPREAD_PICKS = 24  # fallback normal-curve spread when there's no ADP mean pick, just a rank
+AVAILABILITY_N_SIMS = 2000  # spec 12.3: "cost is negligible: 8 picks x ~2,000 sims"
+
+# ---------------------------------------------------------------------------
 # Composite scoring weights (spec Section 6.5) -- single editable dict,
 # renormalized at runtime over whichever layers are actually enabled.
 # ---------------------------------------------------------------------------
@@ -213,9 +226,12 @@ COMPOSITE_WEIGHTS = {
 INJURY_WEIGHT = 1.5  # weight injury more heavily than the source (best-ball has no safety net)
 
 # ---------------------------------------------------------------------------
-# Roster target -- exactly 16 picks, no slack (spec Section 8)
+# Roster target (spec Section 8 / R22). No K here: the props/factor-grid pipeline
+# carries zero individual-kicker data (see DROP_POSITIONS below), so there is nothing
+# for the tool to rank at that position -- the 16th and final pick (188) is a kicker
+# taken by feel, outside the model. 15 tracked picks + 1 untracked K pick = 16.
 # ---------------------------------------------------------------------------
-ROSTER_TARGET = {"QB": 2, "RB": 5, "WR": 6, "TE": 2, "K": 1}
+ROSTER_TARGET = {"QB": 2, "RB": 5, "WR": 6, "TE": 2}
 STARTING_LINEUP = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1}
 FLEX_ELIGIBLE = {"RB", "WR", "TE"}
 
@@ -329,13 +345,26 @@ def canonical_team(raw_code: str, source: str) -> str | None:
 
 # ---------------------------------------------------------------------------
 # Position-code mapping. DEF is dropped entirely (league has no team defenses since
-# 2023); K is kept (one kicker slot, spec Section 4.4).
+# 2023).
+#
+# K is dropped from NFFC specifically, but not from Sleeper -- the two sources are NOT
+# symmetric here. Verified against the raw NFFC export (12.4.4): every single "TK" row
+# is a team-level placeholder ("Falcons, Atlanta", "Bills, Buffalo", ...) plus two joke
+# entries ("Holder, Jeff", "Kicker, Butt") -- NFFC carries zero real per-kicker ADP data
+# this year. Sleeper's "K" rows ARE real, individually named kickers (Brandon Aubrey,
+# Cameron Dicker, ...). Since no props/factor-grid file covers K at all (R22 -- the
+# tool doesn't rank kickers), Sleeper's K rows are harmless orphans kept for reference
+# display; NFFC's are dropped at the source so they stop generating low-adp_n noise
+# notes for team names, not players.
 # ---------------------------------------------------------------------------
 POSITION_MAP_EXCEPTIONS = {
     "nffc": {"TK": "K", "TDSP": "DEF"},
     "sleeper": {"DEF": "DEF"},
 }
-DROP_POSITIONS = {"DEF"}
+DROP_POSITIONS = {
+    "nffc": {"DEF", "K"},
+    "sleeper": {"DEF"},
+}
 
 
 def canonical_position(raw_pos: str, source: str) -> str:

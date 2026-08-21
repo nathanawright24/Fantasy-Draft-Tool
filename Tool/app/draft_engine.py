@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import math
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import lognorm, norm, triang
+from scipy.stats import lognorm, norm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
@@ -63,28 +64,72 @@ def recompute_bonus_est_ppr(df: pd.DataFrame, dispersion_multiplier: float = 1.0
 
 
 # ---------------------------------------------------------------------------
-# Composite scoring (spec Section 6.5)
+# Composite scoring (spec Section 6.5, rewritten per 12.1 / R16-R18)
+#
+# Composite unit is now PPR points, not a within-position percentile average (R16).
+# `vorp` (value over a flex-aware replacement level, R17) and `bonus_est_ppr` (R18)
+# both enter as real points, which is what makes the composite comparable ACROSS
+# positions -- a QB's bonus gain of 8-13 points and a WR's ~1 point now move the
+# composite by their actual relative size instead of being separately re-ranked to
+# ~100 within each position and erased. `factor_norm`/`market_norm` stay as
+# within-position percentiles (spec Section 5 rule #5: factor_score is ordinal, never
+# points, never cross-position) and enter as small additive nudges -- their existing
+# 0-100 scale times their (small, ~0.15) weight caps them at roughly +/-15 points,
+# appropriately modest next to a real point-denominated vorp+bonus term.
 # ---------------------------------------------------------------------------
 _COMPONENT_LAYER = {"base": "implied_props", "bonus": "bonus_model", "factor": "factor_grids"}
 # "market" has no available/applies pair in LAYERS (spec Section 4.2 doesn't define one) --
 # it's controlled purely by its own COMPOSITE_WEIGHTS entry.
 
 
-def _weighted_row_average(df: pd.DataFrame, col_weights: dict[str, float]) -> np.ndarray:
-    """Weighted average where a NaN component is excluded from THAT ROW's denominator --
-    distinct from a whole layer being off (which is excluded from every row's numerator
-    and denominator via a zero weight passed in)."""
-    values = np.zeros(len(df))
-    weight_sum = np.zeros(len(df))
-    for col, w in col_weights.items():
-        if w <= 0:
-            continue
-        v = df[col].to_numpy(dtype=float)
-        mask = ~np.isnan(v)
-        values[mask] += v[mask] * w
-        weight_sum[mask] += w
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(weight_sum > 0, values / weight_sum, np.nan)
+def compute_replacement_levels(
+    df: pd.DataFrame,
+    n_teams: int = config.N_TEAMS,
+    starting_lineup: dict | None = None,
+    flex_eligible: set[str] | None = None,
+) -> dict[str, float]:
+    """Flex-aware replacement level per position (R17): the `ppr_base` of the first
+    player at that position who would NOT start in a league of `n_teams` teams.
+
+    Two-stage rank, because a flex spot's occupant isn't determined by position alone:
+    dedicated starters (QB x1, RB x2, WR x2, TE x1, per team) are locked in first, then
+    every remaining flex-eligible player (RB/WR/TE only -- QB has no flex path) is
+    pooled league-wide and the best `ppr_base` players fill the shared FLEX slots
+    regardless of position. Whichever position a flex slot came from absorbs one more
+    startable player before hitting replacement level there. This is what makes McBride
+    at 212 points able to out-value Loveland at 182 without a hard-coded position
+    hierarchy -- it falls out of where each of them actually ranks against a real
+    12-team, 2-flex bench cutoff.
+    """
+    starting_lineup = starting_lineup or config.STARTING_LINEUP
+    flex_eligible = flex_eligible or config.FLEX_ELIGIBLE
+
+    ranked = {
+        pos: df.loc[df["position"] == pos, "ppr_base"].dropna().sort_values(ascending=False).to_numpy()
+        for pos in config.POSITIONS
+    }
+    dedicated = {pos: starting_lineup.get(pos, 0) * n_teams for pos in config.POSITIONS}
+
+    flex_pool = []
+    for pos in flex_eligible & set(config.POSITIONS):
+        overflow = ranked.get(pos, np.array([]))[dedicated[pos]:]
+        flex_pool.extend((value, pos) for value in overflow)
+    flex_pool.sort(key=lambda t: t[0], reverse=True)
+
+    n_flex_slots = starting_lineup.get("FLEX", 0) * n_teams
+    flex_count_by_pos = Counter(pos for _, pos in flex_pool[:n_flex_slots])
+
+    replacement_level = {}
+    for pos in config.POSITIONS:
+        values = ranked.get(pos, np.array([]))
+        rank = dedicated[pos] + flex_count_by_pos.get(pos, 0)  # 0-indexed: rank-th player is the LAST starter
+        if len(values) == 0:
+            replacement_level[pos] = 0.0
+        elif rank < len(values):
+            replacement_level[pos] = float(values[rank])  # first player who does NOT start
+        else:
+            replacement_level[pos] = float(values[-1])  # pool thinner than the roster target; use the last we have
+    return replacement_level
 
 
 def compute_composite(
@@ -93,15 +138,19 @@ def compute_composite(
     dispersion_multiplier: float = 1.0,
     injury_weight: float | None = None,
 ) -> pd.DataFrame:
-    """Adds base_norm/bonus_norm/factor_norm/market_norm (0-100, within-position) and
-    composite_score (their renormalized weighted average) to a copy of `master`.
+    """Adds `vorp`, `base_norm`/`bonus_norm` (display-only percentiles, spec: "percentiles
+    may remain as expandable display detail; they must not drive the sort"),
+    `factor_norm`/`market_norm`, and `composite_score` (points) to a copy of `master`.
 
-    Renormalization happens at two levels, deliberately kept separate:
-      - Layer-level (spec Section 4.2): a disabled layer's weight is excluded from
-        every row via `enabled_weights`, computed once before the loop.
-      - Row-level: a player missing a component (e.g. no ADP match, no factor grade)
-        has that component excluded from just their own weighted average, never
-        imputed and never silently zeroed into the average.
+    composite_score = w_base*vorp + w_bonus*bonus_est_ppr + w_factor*factor_norm +
+    w_market*market_norm, with weights renormalized to sum to 1 over whichever layers
+    are enabled (spec Section 4.2's "renormalize and show it") -- turning a layer off
+    scales the survivors up to fill the gap rather than leaving it unallocated or
+    (worse) silently inflating just one neighbour. A player missing a component (e.g.
+    no ADP match) contributes 0 for that term rather than imputing or reweighting the
+    rest -- correct here in a way it wasn't for the old percentile average, because a
+    real point value simply isn't observed rather than needing to be estimated from
+    what is.
     """
     df = master.copy()
     weights = dict(weights if weights is not None else config.COMPOSITE_WEIGHTS)
@@ -112,9 +161,15 @@ def compute_composite(
     }
     # layer_on() only knows real LAYERS keys; "market" isn't one, so the `or` above keeps it.
     disabled = sorted(set(weights) - set(enabled_weights))
+    weight_total = sum(enabled_weights.values())
+    norm_weights = {k: (w / weight_total if weight_total > 0 else 0.0) for k, w in enabled_weights.items()}
 
     if dispersion_multiplier != 1.0 and config.layer_on("bonus_model"):
         df["bonus_est_ppr"] = recompute_bonus_est_ppr(df, dispersion_multiplier)
+
+    replacement_level = compute_replacement_levels(df)
+    df["replacement_level"] = df["position"].map(replacement_level)
+    df["vorp"] = df["ppr_base"] - df["replacement_level"]
 
     df["base_norm"] = df.groupby("position")["ppr_base"].rank(pct=True) * 100
     df["bonus_norm"] = df.groupby("position")["bonus_est_ppr"].rank(pct=True) * 100
@@ -137,38 +192,128 @@ def compute_composite(
 
     df["market_norm"] = df.groupby("position")["reference_adp_rank"].rank(pct=True, ascending=False) * 100
 
-    df["composite_score"] = _weighted_row_average(
-        df,
-        {
-            "base_norm": enabled_weights.get("base", 0),
-            "bonus_norm": enabled_weights.get("bonus", 0),
-            "factor_norm": enabled_weights.get("factor", 0),
-            "market_norm": enabled_weights.get("market", 0),
-        },
+    df["composite_score"] = (
+        norm_weights.get("base", 0) * df["vorp"].fillna(0)
+        + norm_weights.get("bonus", 0) * df["bonus_est_ppr"].fillna(0)
+        + norm_weights.get("factor", 0) * df["factor_norm"].fillna(0)
+        + norm_weights.get("market", 0) * df["market_norm"].fillna(0)
     )
     df.attrs["disabled_composite_layers"] = disabled
-    df.attrs["enabled_composite_weights"] = enabled_weights
+    df.attrs["enabled_composite_weights"] = norm_weights
+    df.attrs["replacement_level"] = replacement_level
     return df
 
 
 # ---------------------------------------------------------------------------
-# Availability model (spec Section 7)
+# Availability model (spec Section 7, survival curve rewritten per 12.2 / R19)
 # ---------------------------------------------------------------------------
-def _triangular_survival(adp_min, adp_mode, adp_max, target_pick) -> float | None:
-    if pd.isna(adp_min) or pd.isna(adp_max) or adp_max <= adp_min:
+def _fit_lognormal_from_adp(adp_value, adp_min, adp_max, adp_n) -> tuple[float, float] | None:
+    """Unbounded lognormal fit to NFFC's own ADP columns (R19), replacing the old
+    triangular/PERT curve -- both of those have support exactly [adp_min, adp_max],
+    which is why a target past adp_max used to clip to a hard 0.0 (`1.0 ** hazard ==
+    1.0` for anyone still inside the range, killing the manager-priors signal outright).
+
+    median = adp_value; sigma is chosen so the curve's [1/(n+1), n/(n+1)] quantiles --
+    the expected extreme order statistics of n real draws -- bracket [adp_min, adp_max].
+    This is also why small adp_n widens the curve automatically: fewer drafts means the
+    observed min/max only pins down a LESS extreme quantile pair (n=6 brackets roughly
+    the 14th-86th percentile, not the ~2nd-98th an n=51 sample would), so the same
+    numeric gap between min and max implies a wider sigma -- a continuous function of
+    sample size instead of the old ADP_MIN_N=15 binary cliff.
+
+    Falls back to a fixed generic sigma (still unbounded, still no hard clip) when the
+    empirical range is missing or degenerate.
+    """
+    if pd.isna(adp_value) or adp_value <= 0:
         return None
-    mode = min(max(adp_mode, adp_min), adp_max)
-    c = (mode - adp_min) / (adp_max - adp_min)
-    return float(triang.sf(target_pick, c=c, loc=adp_min, scale=adp_max - adp_min))
+    mu = math.log(adp_value)
+    sigma = config.GENERIC_LOGNORMAL_SIGMA
+    if pd.notna(adp_n) and adp_n >= 2 and pd.notna(adp_min) and pd.notna(adp_max) and adp_max > adp_min > 0:
+        lo_q, hi_q = 1.0 / (adp_n + 1), adp_n / (adp_n + 1)
+        z_lo, z_hi = norm.ppf(lo_q), norm.ppf(hi_q)
+        candidates = []
+        if z_lo < -1e-6:
+            candidates.append((math.log(adp_min) - mu) / z_lo)
+        if z_hi > 1e-6:
+            candidates.append((math.log(adp_max) - mu) / z_hi)
+        if candidates:
+            sigma = max(float(np.mean(candidates)), 0.05)
+    return mu, sigma
 
 
-def _generic_survival(adp_rank, target_pick, spread_picks=24) -> float:
-    """The widened-variance fallback (spec Section 4.2's mandated 'built alongside the
-    primary path, not after'). Used whenever NFFC's own min/max is unusable for a player
-    AND whenever manager_priors doesn't apply at all."""
-    if pd.isna(adp_rank):
-        return 0.5
-    return float(norm.sf(target_pick, loc=adp_rank, scale=spread_picks))
+def _survival_baseline_row(row: pd.Series, as_of_pick: int, target_pick: int) -> tuple[float, bool]:
+    """P(survive to target_pick | survived to as_of_pick) = S(target)/S(as_of) (R19's
+    "independent of distribution choice" conditioning) from either the fitted lognormal
+    or, when NFFC's ADP is unusable for this player, the widened generic normal-on-rank
+    fallback (spec Section 4.2's 'built alongside the primary path, not after'). This
+    baseline IS what compute_availability returns untouched when manager_priors doesn't
+    apply -- the fallback is a first-class path, not an error branch.
+    """
+    params = None
+    if row.get("comparison_adp_usable") and pd.notna(row.get("comparison_adp_value")):
+        params = _fit_lognormal_from_adp(
+            row.get("comparison_adp_value"), row.get("comparison_adp_min"),
+            row.get("comparison_adp_max"), row.get("comparison_adp_n"),
+        )
+    if params is not None:
+        mu, sigma = params
+        s_target = float(lognorm.sf(max(target_pick, 1e-6), s=sigma, scale=math.exp(mu)))
+        s_asof = float(lognorm.sf(max(as_of_pick, 1e-6), s=sigma, scale=math.exp(mu))) if as_of_pick > 0 else 1.0
+        used_fallback = False
+    else:
+        adp_rank = row.get("reference_adp_rank")
+        if pd.isna(adp_rank):
+            return 0.5, True
+        s_target = float(norm.sf(target_pick, loc=adp_rank, scale=config.GENERIC_ADP_SPREAD_PICKS))
+        s_asof = float(norm.sf(as_of_pick, loc=adp_rank, scale=config.GENERIC_ADP_SPREAD_PICKS)) if as_of_pick > 0 else 1.0
+        used_fallback = True
+    surv = s_target / s_asof if s_asof > 1e-9 else 0.0
+    return float(np.clip(surv, 0.0, 1.0)), used_fallback
+
+
+def _lognormal_fit_arrays(pool: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-player (mu, sigma, has_fit) arrays, computed once and reused across every
+    intervening pick's hazard evaluation -- the fit itself doesn't depend on the pick
+    number, only its survival/hazard VALUE does."""
+    n = len(pool)
+    mu_arr, sigma_arr, has_fit = np.zeros(n), np.zeros(n), np.zeros(n, dtype=bool)
+    usable = pool.get("comparison_adp_usable", pd.Series(False, index=pool.index)).to_numpy()
+    value = pool.get("comparison_adp_value", pd.Series(np.nan, index=pool.index)).to_numpy()
+    adp_min = pool.get("comparison_adp_min", pd.Series(np.nan, index=pool.index)).to_numpy()
+    adp_max = pool.get("comparison_adp_max", pd.Series(np.nan, index=pool.index)).to_numpy()
+    adp_n = pool.get("comparison_adp_n", pd.Series(np.nan, index=pool.index)).to_numpy()
+    for i in range(n):
+        if not usable[i] or pd.isna(value[i]):
+            continue
+        params = _fit_lognormal_from_adp(value[i], adp_min[i], adp_max[i], adp_n[i])
+        if params is not None:
+            mu_arr[i], sigma_arr[i] = params
+            has_fit[i] = True
+    return mu_arr, sigma_arr, has_fit
+
+
+def _pick_hazard_vector(pool_size: int, overall_pick: int, mu_arr, sigma_arr, has_fit, rank_arr) -> np.ndarray:
+    """Vectorized 'about to be taken right around this pick' hazard (pdf/sf) for every
+    player in the pool at once -- the ADP-position term the Monte Carlo softmax weights
+    on (spec 12.3: 'sampled from a softmax over available players weighted by ADP
+    position'). Fitted-lognormal players and generic-fallback players are each handled
+    with one vectorized scipy call rather than a per-player Python loop."""
+    hz = np.zeros(pool_size)
+    x = max(overall_pick, 1e-6)
+    if has_fit.any():
+        sf = np.clip(lognorm.sf(x, s=sigma_arr[has_fit], scale=np.exp(mu_arr[has_fit])), 1e-9, None)
+        pdf = lognorm.pdf(x, s=sigma_arr[has_fit], scale=np.exp(mu_arr[has_fit]))
+        hz[has_fit] = pdf / sf
+    generic = ~has_fit
+    if generic.any():
+        rk = rank_arr[generic]
+        has_rank = ~np.isnan(rk)
+        out = np.full(rk.shape, 1.0 / (config.N_TEAMS * config.N_ROUNDS))
+        sf = np.clip(norm.sf(x, loc=rk[has_rank], scale=config.GENERIC_ADP_SPREAD_PICKS), 1e-9, None)
+        pdf = norm.pdf(x, loc=rk[has_rank], scale=config.GENERIC_ADP_SPREAD_PICKS)
+        out[has_rank] = pdf / sf
+        hz[generic] = out
+    return np.clip(hz, 1e-9, 50.0)
 
 
 def _confidence_widen(row: pd.Series) -> float:
@@ -230,17 +375,144 @@ def _position_pick_rate(manager_row: pd.Series, position: str, round_num: int, h
     return 0.10
 
 
+def _bias_multiplier_array(
+    pool: pd.DataFrame, manager: str, team_bias_lookup: dict[tuple[str, str], float], owner_colleges: dict[str, list[str]]
+) -> np.ndarray:
+    """Per-player team/college bias multiplier for one manager (spec: applied to
+    survival before; here it's the same ratio repurposed as a pick-weight multiplier --
+    a manager more likely to draft a team/school gets a proportionally higher chance of
+    being the one who takes that player in the simulation)."""
+    n = len(pool)
+    mult = np.ones(n)
+    if config.layer_on("nfl_team_bias"):
+        teams = pool["nfl_team"].to_numpy()
+        for i in range(n):
+            ratio = team_bias_lookup.get((manager, teams[i]))
+            if ratio is not None:
+                mult[i] *= min(max(ratio, config.NFL_TEAM_BIAS_CAP), 1.0 / config.NFL_TEAM_BIAS_CAP)
+    if config.layer_on("college_bias"):
+        affinity = owner_colleges.get(manager, [])
+        if affinity:
+            colleges = pool["college"].to_numpy()
+            for i in range(n):
+                if colleges[i] in affinity:
+                    mult[i] /= config.COLLEGE_BIAS_DISCOUNT
+    return mult
+
+
+def simulate_intervening_picks(
+    pool: pd.DataFrame,
+    intervening: list[tuple[int, int, str]],
+    manager_priors: pd.DataFrame,
+    team_bias: pd.DataFrame,
+    owner_roster_by_manager: dict[str, dict[str, int]],
+    owner: str = config.OWNER,
+    n_sims: int = config.AVAILABILITY_N_SIMS,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Monte Carlo capacity constraint (spec 12.3, R20/R21): discretely simulates every
+    intervening pick so exactly k players leave in k picks, by construction -- fixing
+    the marginal model's "159 players expected gone in 8 picks" defect. Each pick is
+    drawn from a softmax over the still-available pool, weighted by that player's own
+    ADP-implied hazard (R19's curve, at that exact pick number) x the picking manager's
+    positional appetite at that round vs. league average x team/college bias. Because
+    every pick removes a real player from the SAME shared pool, substitution is free:
+    if a simulated draw takes McBride, every other TE's odds improve in that draw and
+    every other manager's TE need can no longer be filled by him specifically -- a
+    marginal per-player model cannot represent that "only one of these TEs goes."
+
+    `intervening` is `[(overall_pick, round, manager), ...]` for every pick strictly
+    between the current state and the target, in order (each manager appears once per
+    pick they make -- twice within one owner-to-owner window, per the fixed-window
+    property). Returns survival fraction per row of `pool`, in `pool`'s original order.
+    """
+    rng = rng or np.random.default_rng()
+    n = len(pool)
+    if n == 0 or not intervening:
+        return np.ones(n)
+
+    positions = pool["position"].to_numpy()
+    pos_index = {p: i for i, p in enumerate(config.POSITIONS)}
+    pos_codes = np.array([pos_index.get(p, -1) for p in positions])
+    rank_arr = pool.get("reference_adp_rank", pd.Series(np.nan, index=pool.index)).to_numpy(dtype=float)
+    mu_arr, sigma_arr, has_fit = _lognormal_fit_arrays(pool)
+
+    priors_by_manager = manager_priors.set_index("manager")
+    league_avg_row = pd.Series(_league_average_rates(manager_priors, owner))
+    team_bias_lookup = {
+        (r["manager"], r["nfl_team"]): r["bias_ratio"] for _, r in team_bias.iterrows()
+    } if config.layer_on("nfl_team_bias") else {}
+    owner_colleges = config.MANAGER_COLLEGE_AFFINITY if config.layer_on("college_bias") else {}
+
+    n_picks = len(intervening)
+    base_weight = np.ones((n_picks, n))
+    # appetite[k, has_already, pos_code] -- the only piece that can vary within a
+    # simulation (has_already depends on what THIS manager already took, in-sim).
+    appetite = np.ones((n_picks, 2, len(config.POSITIONS)))
+    valid_manager = np.zeros(n_picks, dtype=bool)
+    bias_cache: dict[str, np.ndarray] = {}
+
+    for k, (overall, round_num, manager) in enumerate(intervening):
+        hz = _pick_hazard_vector(n, overall, mu_arr, sigma_arr, has_fit, rank_arr)
+        if manager not in bias_cache:
+            bias_cache[manager] = _bias_multiplier_array(pool, manager, team_bias_lookup, owner_colleges)
+        base_weight[k] = hz * bias_cache[manager]
+
+        if manager in priors_by_manager.index:
+            valid_manager[k] = True
+            mrow = priors_by_manager.loc[manager]
+            widen = _confidence_widen(mrow)
+            for has_already in (False, True):
+                for pos in config.POSITIONS:
+                    manager_rate = _position_pick_rate(mrow, pos, round_num, has_already)
+                    league_rate = _position_pick_rate(league_avg_row, pos, round_num, has_position_already=False)
+                    ratio = manager_rate / league_rate if league_rate > 0 else 1.0
+                    appetite[k, int(has_already), pos_index[pos]] = max(1.0 + (ratio - 1.0) / widen, 1e-6)
+
+    survived_count = np.zeros(n, dtype=np.int64)
+    for _ in range(n_sims):
+        available = np.ones(n, dtype=bool)
+        has_pos: dict[str, np.ndarray] = {}
+        for k, (overall, round_num, manager) in enumerate(intervening):
+            idx = np.flatnonzero(available)
+            if len(idx) == 0:
+                break
+            if valid_manager[k]:
+                if manager not in has_pos:
+                    real = owner_roster_by_manager.get(manager, {})
+                    has_pos[manager] = np.array([real.get(pos, 0) > 0 for pos in config.POSITIONS])
+                already = has_pos[manager]
+                pc_idx = pos_codes[idx]
+                mult = np.where(already[np.clip(pc_idx, 0, None)], appetite[k, 1, np.clip(pc_idx, 0, None)], appetite[k, 0, np.clip(pc_idx, 0, None)])
+                w = base_weight[k, idx] * mult
+            else:
+                w = base_weight[k, idx]
+            w = np.clip(w, 1e-12, None)
+            choice = rng.choice(idx, p=w / w.sum())
+            available[choice] = False
+            pc = pos_codes[choice]
+            if pc >= 0 and manager in has_pos:
+                has_pos[manager][pc] = True
+        survived_count += available.astype(np.int64)
+
+    return survived_count / n_sims
+
+
 def compute_availability(
     board: pd.DataFrame,
     as_of_pick: int,
     target_pick: int,
     manager_priors: pd.DataFrame,
     team_bias: pd.DataFrame,
+    drafted_name_keys: set[str] | None = None,
     owner_roster_by_manager: dict[str, dict[str, int]] | None = None,
     owner: str = config.OWNER,
     draft_order: list[str] = config.DRAFT_ORDER_2026,
+    n_sims: int = config.AVAILABILITY_N_SIMS,
+    rng: np.random.Generator | None = None,
 ) -> pd.DataFrame:
-    """Adds `survival_probability` and `availability_used_fallback` to a copy of `board`.
+    """Adds `survival_baseline`, `availability_used_fallback`, and `survival_probability`
+    to a copy of `board`.
 
     `as_of_pick` is the last pick actually made in the live draft (0 if none yet).
     `target_pick` is the pick we want survival probability AT -- normally the owner's
@@ -251,98 +523,55 @@ def compute_availability(
     before target_pick, many intervening managers) -- two different questions that a
     single parameter would silently answer identically.
 
-    Baseline (always computed): a triangular/PERT survival curve from NFFC's own
-    adp_min/adp_value/adp_max (spec Section 4.4), or the widened generic curve when
-    those are unusable for a player. This baseline IS the fallback path -- when
-    manager_priors doesn't apply, this function returns it untouched, which is what
-    makes the fallback "built alongside the primary path" rather than a separate branch.
+    Baseline (always computed, every row, regardless of draft state): the R19
+    lognormal-or-generic curve, conditioned on survival to `as_of_pick`. This baseline
+    IS the fallback path -- when manager_priors doesn't apply, this function returns it
+    untouched, which is what makes the fallback "built alongside the primary path"
+    rather than a separate branch.
 
-    Primary refinement (only when manager_priors applies): each intervening manager's
-    position-taking rate at their upcoming round is compared against the league-average
-    rate (excluding the owner) for that position/round, turned into a hazard multiplier,
-    and applied as `survival ** hazard` -- which stays in [0, 1] automatically and
-    collapses exactly to the baseline when every manager's rate equals the league
-    average (hazard == 1).
+    Primary refinement (only when manager_priors applies AND there are intervening
+    picks): `drafted_name_keys` filters `board` down to the pool of players actually
+    still on the clock, and `simulate_intervening_picks` (R20/R21) discretely simulates
+    every pick between `as_of_pick` and `target_pick` from that pool. Rows not in the
+    pool (already drafted, or outside `config.POSITIONS`) get `survival_probability` 0.
     """
     df = board.copy()
     owner_roster_by_manager = owner_roster_by_manager or {}
+    drafted_name_keys = drafted_name_keys or set()
 
-    baseline = []
-    used_fallback = []
+    baseline, used_fallback = [], []
     for _, row in df.iterrows():
-        surv = None
-        if row.get("comparison_adp_usable") and pd.notna(row.get("comparison_adp_min")):
-            surv = _triangular_survival(row.get("comparison_adp_min"), row.get("comparison_adp_value"), row.get("comparison_adp_max"), target_pick)
-        if surv is None:
-            surv = _generic_survival(row.get("reference_adp_rank"), target_pick)
-            used_fallback.append(True)
-        else:
-            used_fallback.append(False)
+        surv, fb = _survival_baseline_row(row, as_of_pick, target_pick)
         baseline.append(surv)
+        used_fallback.append(fb)
     df["survival_baseline"] = baseline
     df["availability_used_fallback"] = used_fallback
+    # Floor/ceiling, not just [0, 1]: a literal 0.0% reads as "impossible" in the UI, and
+    # spec Section 5 rule #11 makes the same point about bust rates -- never render false
+    # certainty in either direction, even when the model's point estimate is extreme.
+    df["survival_baseline"] = df["survival_baseline"].clip(0.005, 0.995)
 
     if not config.layer_on("manager_priors"):
         df["survival_probability"] = df["survival_baseline"]
         df["availability_used_fallback"] = True
         return df
 
-    managers = config.managers_in_range(as_of_pick, target_pick, draft_order)
-    if not managers:
-        df["survival_probability"] = 1.0
+    seq = config.full_draft_sequence(draft_order)
+    intervening = [
+        (overall, rnd, mgr) for overall, rnd, mgr in seq if as_of_pick < overall < target_pick and mgr != owner
+    ]  # spec Section 7: "Exclude Nathan's own priors -- he is not competing with himself"
+    if not intervening:
+        df["survival_probability"] = np.where(df["name_key"].isin(drafted_name_keys), 0.0, 1.0)
         return df
 
-    # The "league average" manager (excluding the owner) is a synthetic prior row built
-    # from _league_average_rates, run through the exact same _position_pick_rate() used
-    # for real managers -- so "average appetite" is defined by the identical formula
-    # rather than a separately hand-picked constant per position.
-    league_avg_row = pd.Series(_league_average_rates(manager_priors, owner))
-    priors_by_manager = manager_priors.set_index("manager")
+    in_pool = df["position"].isin(config.POSITIONS) & ~df["name_key"].isin(drafted_name_keys)
+    pool = df[in_pool]
+    survival = simulate_intervening_picks(
+        pool, intervening, manager_priors, team_bias, owner_roster_by_manager, owner, n_sims=n_sims, rng=rng
+    )
 
-    # One hazard multiplier per (manager, position) pair -- reused across every player
-    # of that position, since the manager-level term doesn't depend on the individual
-    # player (team/college bias is applied per-player below).
-    hazards_by_position: dict[str, list[float]] = {pos: [] for pos in config.POSITIONS + ["K"]}
-    for i, manager in enumerate(managers):
-        pick_num = as_of_pick + i + 1
-        round_num = config.round_of_pick(pick_num)
-        if manager not in priors_by_manager.index:
-            continue
-        mrow = priors_by_manager.loc[manager]
-        widen = _confidence_widen(mrow)
-        for pos in config.POSITIONS + ["K"]:
-            has_already = owner_roster_by_manager.get(manager, {}).get(pos, 0) > 0
-            manager_rate = _position_pick_rate(mrow, pos, round_num, has_already)
-            league_rate = _position_pick_rate(league_avg_row, pos, round_num, has_position_already=False)
-            ratio = manager_rate / league_rate if league_rate > 0 else 1.0
-            dampened = 1.0 + (ratio - 1.0) / widen
-            hazards_by_position[pos].append((manager, dampened))
-
-    def _player_hazard(row) -> float:
-        pos = row["position"]
-        hazard = 1.0
-        for manager, base_hazard in hazards_by_position.get(pos, []):
-            h = base_hazard
-            if config.layer_on("nfl_team_bias") and pd.notna(row.get("nfl_team")):
-                tb = team_bias[(team_bias["manager"] == manager) & (team_bias["nfl_team"] == row["nfl_team"])]
-                if len(tb):
-                    ratio = float(tb.iloc[0]["bias_ratio"])
-                    ratio = min(max(ratio, config.NFL_TEAM_BIAS_CAP), 1.0 / config.NFL_TEAM_BIAS_CAP)
-                    h *= ratio
-            if config.layer_on("college_bias") and pd.notna(row.get("college")):
-                affinity = config.MANAGER_COLLEGE_AFFINITY.get(manager, [])
-                if row["college"] in affinity:
-                    h /= config.COLLEGE_BIAS_DISCOUNT
-            hazard *= h
-        return hazard
-
-    df["hazard_exponent"] = df.apply(_player_hazard, axis=1)
-    df["survival_probability"] = (
-        df["survival_baseline"].clip(1e-6, 1 - 1e-6) ** df["hazard_exponent"]
-    ).clip(0.005, 0.995)
-    # Floor/ceiling, not just [0, 1]: a literal 0.0% reads as "impossible" in the UI, and
-    # spec Section 5 rule #11 makes the same point about bust rates -- never render false
-    # certainty in either direction, even when the model's point estimate is extreme.
+    df["survival_probability"] = 0.0
+    df.loc[in_pool, "survival_probability"] = np.clip(survival, 0.005, 0.995)
     return df
 
 

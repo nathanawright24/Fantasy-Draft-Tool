@@ -216,7 +216,7 @@ def load_oline(report: JoinReport) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 def _validate_position(pos: str, source: str, raw: str, player: str, report: JoinReport) -> bool:
     """Returns True if this row should be kept."""
-    if pos in config.DROP_POSITIONS:
+    if pos in config.DROP_POSITIONS.get(source, set()):
         return False
     if pos not in ALLOWED_POSITIONS:
         report.fail(f"{source}_adp: unrecognized position code '{raw}' for player '{player}'")

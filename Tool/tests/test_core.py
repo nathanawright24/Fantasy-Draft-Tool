@@ -17,6 +17,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -27,6 +28,7 @@ sys.path.insert(0, str(TOOL_ROOT / "app"))
 import config  # noqa: E402
 import draft_engine as de  # noqa: E402
 from build import pipeline  # noqa: E402
+import backtest  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +176,10 @@ def test_draft_engine_smoke(built):
     board = de.compute_composite(master)
     assert board["composite_score"].notna().any()
 
-    avail = de.compute_availability(board, as_of_pick=4, target_pick=20, manager_priors=manager_priors, team_bias=team_bias)
+    avail = de.compute_availability(
+        board, as_of_pick=4, target_pick=20, manager_priors=manager_priors, team_bias=team_bias,
+        n_sims=300, rng=np.random.default_rng(0),
+    )
     assert avail["survival_probability"].between(0, 1).all()
 
     fabricated_picks = [
@@ -205,3 +210,140 @@ def test_composite_renormalizes_when_a_layer_is_disabled(built):
         assert "bonus" not in board.attrs["enabled_composite_weights"]
     finally:
         config.LAYERS["bonus_model"]["applies"] = saved
+
+
+# ---------------------------------------------------------------------------
+# 5. Post-review corrections (spec Section 12): VORP composite, lognormal survival,
+#    Monte Carlo capacity constraint.
+# ---------------------------------------------------------------------------
+def test_replacement_level_is_flex_aware():
+    # 2-team toy league, 1 dedicated starter per position + 1 shared FLEX slot, so the
+    # arithmetic is checkable by hand. RB/WR/TE overflow (everyone past their 2 dedicated
+    # starters) pools together; the two best overflow players (RB=40, WR=38) take the
+    # two FLEX slots, so RB and WR each absorb one extra startable player and TE doesn't.
+    df = pd.DataFrame(
+        {
+            "position": (["QB"] * 5) + (["RB"] * 10) + (["WR"] * 10) + (["TE"] * 10),
+            "ppr_base": (
+                [50, 40, 30, 20, 10]
+                + [50, 45, 40, 35, 30, 25, 20, 15, 10, 5]
+                + [48, 44, 38, 34, 28, 24, 18, 14, 8, 4]
+                + [46, 42, 36, 32, 26, 22, 16, 12, 6, 2]
+            ),
+        }
+    )
+    levels = de.compute_replacement_levels(
+        df, n_teams=2, starting_lineup={"QB": 1, "RB": 1, "WR": 1, "TE": 1, "FLEX": 1}, flex_eligible={"RB", "WR", "TE"}
+    )
+    assert levels == {"QB": 30.0, "RB": 35.0, "WR": 34.0, "TE": 36.0}
+
+
+def test_composite_score_is_points_not_a_percentile(built):
+    # The defect (spec 12.1): every position's best player scored ~99-100 regardless of
+    # real value (Loveland at 182 proj. points outranking Jefferson at 252). A points-
+    # denominated composite has no reason to cluster every position's ceiling near 100 --
+    # real per-position value differs by more than a percentile scale ever could show.
+    master, _ = built
+    board = de.compute_composite(master)
+    top_by_position = board.groupby("position")["composite_score"].max()
+    assert top_by_position.max() - top_by_position.min() > 15
+    # A real VORP scale routinely goes negative (below-replacement bench players) and
+    # above 100 (a true positional-scarcity standout) -- a 0-100 percentile never could.
+    assert board["composite_score"].min() < 0 or board["composite_score"].max() > 100
+
+
+def test_bonus_dispersion_zero_moves_composite_score_itself(built):
+    # Not just bonus_norm (display) -- bonus_est_ppr must be wired into composite_score
+    # IN POINTS per R18, so zeroing it changes the actual sort, not just a side column.
+    master, _ = built
+    full = de.compute_composite(master, dispersion_multiplier=1.0)
+    zero = de.compute_composite(master, dispersion_multiplier=0.0)
+    qb_drop = full.loc[full["position"] == "QB", "composite_score"].mean() - zero.loc[zero["position"] == "QB", "composite_score"].mean()
+    assert qb_drop > 0.5
+
+
+def test_survival_baseline_is_not_degenerate_past_adp_max():
+    # The defect (spec 12.2): a triangular/PERT curve's support is exactly
+    # [adp_min, adp_max], so a target past adp_max clipped to a hard 0.0 -- no signal,
+    # no matter how strong the manager-priors evidence was. The lognormal fit (R19) is
+    # unbounded, so this must land strictly between 0 and 1, not at the old hard floor.
+    row = pd.Series(
+        {
+            "comparison_adp_usable": True, "comparison_adp_value": 30.0,
+            "comparison_adp_min": 17.0, "comparison_adp_max": 41.0, "comparison_adp_n": 51.0,
+            "reference_adp_rank": 30.0,
+        }
+    )
+    surv, used_fallback = de._survival_baseline_row(row, as_of_pick=44, target_pick=53)
+    assert not used_fallback
+    assert 0.0 < surv < 0.5  # past adp_max=41 -> unlikely, but never impossible
+
+
+def test_survival_conditions_on_present():
+    # R19's "independent of distribution choice" fix: P(survive to target | survived to
+    # as_of) = S(target)/S(as_of). Since S is monotone decreasing, conditioning on
+    # having already survived to a later as_of_pick can only raise (or match) the
+    # unconditioned probability, never lower it.
+    row = pd.Series(
+        {
+            "comparison_adp_usable": True, "comparison_adp_value": 60.0,
+            "comparison_adp_min": 40.0, "comparison_adp_max": 90.0, "comparison_adp_n": 40.0,
+            "reference_adp_rank": 60.0,
+        }
+    )
+    unconditioned, _ = de._survival_baseline_row(row, as_of_pick=0, target_pick=70)
+    conditioned, _ = de._survival_baseline_row(row, as_of_pick=44, target_pick=70)
+    assert conditioned >= unconditioned
+
+
+def test_capacity_constraint_bounds_expected_departures(built):
+    # The defect (spec 12.3): a marginal per-player model expected 159.1 total
+    # departures and 48.7 TEs across 8 real picks, because nothing tied total departures
+    # to the number of picks that actually occur. Monte Carlo removes exactly one
+    # player per simulated pick by construction, so the expected total across the pool
+    # must track the real pick count, not blow up by 20x.
+    master, _ = built
+    manager_priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+
+    as_of_pick, target_pick = 44, 53
+    k = len([1 for o, _, m in config.full_draft_sequence() if as_of_pick < o < target_pick and m != config.OWNER])
+    avail = de.compute_availability(
+        board, as_of_pick=as_of_pick, target_pick=target_pick, manager_priors=manager_priors, team_bias=team_bias,
+        n_sims=500, rng=np.random.default_rng(1),
+    )
+    pool = avail[avail["position"].isin(config.POSITIONS)]
+    expected_departed = (1 - pool["survival_probability"]).sum()
+    te_departed = (1 - pool.loc[pool["position"] == "TE", "survival_probability"]).sum()
+
+    assert k * 0.5 <= expected_departed <= k * 3  # was ~159 for k=8 before the fix
+    assert te_departed < 10  # was 48.7 (more TEs than picks even existed) before the fix
+
+
+# ---------------------------------------------------------------------------
+# 6. Backtest smoke test (spec 12.5 / R25) -- the human-facing calibration report is
+#    read by eye before draft day, not asserted on; this just guards the mechanism
+#    against a silent crash or a malformed-output regression.
+# ---------------------------------------------------------------------------
+def test_backtest_smoke(built):
+    results, notes = backtest.run_backtest(n_sims=50, seed=0)
+    assert notes  # every season should produce at least a coverage note
+    assert not results.empty
+    assert set(results.columns) == {"season", "as_of_pick", "target_pick", "position", "predicted", "actual"}
+    assert results["predicted"].between(0, 1).all()
+    assert results["actual"].isin([0.0, 1.0]).all()
+    assert set(results["position"]) <= set(config.POSITIONS)
+
+
+# ---------------------------------------------------------------------------
+# 7. Streamlit app smoke test -- guards main.py's call sites against drifting out of
+#    sync with draft_engine's signatures (e.g. compute_availability's new
+#    drafted_name_keys parameter, added alongside the 12.1-12.3 rewrite).
+# ---------------------------------------------------------------------------
+def test_streamlit_app_smoke(built):
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(TOOL_ROOT / "app" / "main.py"), default_timeout=60)
+    at.run()
+    assert not at.exception

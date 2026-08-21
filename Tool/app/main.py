@@ -202,12 +202,13 @@ def render_board(board: pd.DataFrame, state: dict) -> None:
 
     display_cols = [
         "player", "position", "nfl_team", "composite_score", "survival_probability",
-        "ppr_base", "bonus_est_ppr", "factor_score_recomputed", "archetype",
+        "vorp", "ppr_base", "bonus_est_ppr", "factor_score_recomputed", "archetype",
         "reference_adp_rank", "comparison_adp_rank", "adp_rank_divergence",
     ]
     st.dataframe(
         view[display_cols].style.format(
-            {"composite_score": "{:.1f}", "survival_probability": "{:.0%}", "ppr_base": "{:.1f}", "bonus_est_ppr": "{:.1f}"}
+            {"composite_score": "{:.1f}", "survival_probability": "{:.0%}", "vorp": "{:.1f}",
+             "ppr_base": "{:.1f}", "bonus_est_ppr": "{:.1f}"}
         ),
         use_container_width=True,
         height=560,
@@ -217,8 +218,11 @@ def render_board(board: pd.DataFrame, state: dict) -> None:
         pick_name = st.selectbox("Player", view["player"].tolist())
         row = view[view["player"] == pick_name].iloc[0]
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Base (norm)", f"{row['base_norm']:.0f}", help=f"ppr_base={row['ppr_base']:.1f} ({row['ppr_base_source']})")
-        c2.metric("Bonus (norm)", f"{row['bonus_norm']:.0f}", help=f"bonus_est_ppr={row['bonus_est_ppr']:.1f}")
+        c1.metric(
+            "Base (VORP, pts)", f"{row['vorp']:.1f}",
+            help=f"ppr_base={row['ppr_base']:.1f} ({row['ppr_base_source']}), replacement_level={row['replacement_level']:.1f}",
+        )
+        c2.metric("Bonus (pts)", f"{row['bonus_est_ppr']:.1f}", help=f"within-position percentile: {row['bonus_norm']:.0f}")
         c3.metric("Factor (norm)", "n/a" if pd.isna(row["factor_norm"]) else f"{row['factor_norm']:.0f}",
                    help=f"factor_score_recomputed={row.get('factor_score_recomputed')}, archetype={row.get('archetype')}")
         c4.metric("Market (norm)", "n/a" if pd.isna(row["market_norm"]) else f"{row['market_norm']:.0f}",
@@ -341,6 +345,7 @@ def main() -> None:
         target_pick=owner_next_pick_number(state),
         manager_priors=manager_priors,
         team_bias=team_bias,
+        drafted_name_keys=drafted_name_keys(state),
         owner_roster_by_manager=roster_counts_by_manager(state),
     )
 

@@ -1,10 +1,10 @@
-Join report -- generated 2026-08-16T16:46:06
+Join report -- generated 2026-08-16T20:29:14
 ==============================================================================
 
 HARD FAILURES (0) -- these must be fixed before shipping
 ------------------------------------------------------------------------------
 
-NOTES / FLAGGED (161) -- unmatched names, coverage boundaries,
+NOTES / FLAGGED (146) -- unmatched names, coverage boundaries,
 low-sample flags. Never suppressed; eyeball before trusting a build.
 ------------------------------------------------------------------------------
   - priors/QB: rekeyed 'Cam Ward' to props' 'cameron ward' via NAME_ALIASES -- same real join key from here on, so both the team backfill and the player_master merge pick up the props row
@@ -51,7 +51,6 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: 'DeVito, Tommy' has adp_n=1 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Mumpfield, Konata' has adp_n=1 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Vaki, Sione' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Holder, Jeff' has adp_n=1 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Miller, Kendre' has adp_n=1 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Musgrave, Luke' has adp_n=1 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Bennett IV, Stetson' has adp_n=1 (< 15) -- shown but excluded from survival math
@@ -89,7 +88,6 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: 'Turpin, KaVontae' has adp_n=3 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Huntley, Tyler' has adp_n=3 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Joly, Justin' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Kicker, Butt' has adp_n=3 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Thomas, Zavion' has adp_n=6 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Hill, Tyreek' has adp_n=10 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Harris, Najee' has adp_n=5 (< 15) -- shown but excluded from survival math
@@ -98,20 +96,15 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: 'Waller, Darren' has adp_n=6 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Robinson, Demarcus' has adp_n=6 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Lance, Bryce' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Falcons, Atlanta' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Penix Jr., Michael' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Benson, Malik' has adp_n=9 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'All Jr., Erick' has adp_n=5 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Mayer, Michael' has adp_n=13 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Bills, Buffalo' has adp_n=13 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Johnson, Tez' has adp_n=5 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Stowers, Eli' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Zaccheaus, Olamide' has adp_n=6 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Packers, Green Bay' has adp_n=14 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Hollins, Mack' has adp_n=6 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Davis, Malik' has adp_n=13 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Titans, Tennessee' has adp_n=12 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Eagles, Philadelphia' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Johnson, Theo' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Mariota, Marcus' has adp_n=6 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Bell, Skyler' has adp_n=10 (< 15) -- shown but excluded from survival math
@@ -121,16 +114,11 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: 'Benson, Trey' has adp_n=14 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Raridon, Eli' has adp_n=9 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Brown, Hollywood' has adp_n=11 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Cardinals, Arizona' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Dike, Chimere' has adp_n=12 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Raiders, Las Vegas' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Noel, Jaylin' has adp_n=13 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Wilson, Roman' has adp_n=8 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Palmer, Joshua' has adp_n=9 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Commanders, Washington' has adp_n=12 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Dolphins, Miami' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'McCarthy, J.J.' has adp_n=11 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Giants, New York (NYG)' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Williams, Kyle' has adp_n=8 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Washington, Darnell' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Sarratt, Elijah' has adp_n=10 (< 15) -- shown but excluded from survival math
@@ -143,10 +131,7 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: 'Brooks, Chris' has adp_n=13 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Douglas, DeMario' has adp_n=14 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Jones, Mac' has adp_n=11 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Browns, Cleveland' has adp_n=11 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Fields, Justin' has adp_n=10 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Panthers, Carolina' has adp_n=12 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Jets, New York (NYJ)' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Singletary, Devin' has adp_n=14 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Bourne, Kendrick' has adp_n=9 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Brooks, Tahj' has adp_n=12 (< 15) -- shown but excluded from survival math
