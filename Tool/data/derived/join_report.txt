@@ -1,4 +1,4 @@
-Join report -- generated 2026-08-23T16:25:57
+Join report -- generated 2026-08-23T18:26:58
 ==============================================================================
 
 HARD FAILURES (0) -- these must be fixed before shipping

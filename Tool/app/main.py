@@ -2,16 +2,15 @@
 Streamlit entry point. Board with expandable layers, manual pick entry with undo,
 optional Sleeper sync, and an always-visible sidebar strip showing which analysis
 layers are on/off (spec Section 4.2 requirement #2 -- "a visible strip, not a settings
-page"). State persistence and undo live here directly rather than in a separate
-state.py -- small enough that a dedicated file would just be another place to jump to
-without earning it.
+page"). Draft state persistence and roster-derivation logic live in app/draft_state.py
+(work order 2026-08-16 item 0b) -- this file is UI only, so `grep -l streamlit
+app/*.py` returns just this file.
 
 Run with:
     streamlit run app/main.py
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -24,9 +23,8 @@ sys.path.insert(0, str(_APP_DIR))  # for sibling imports -- Streamlit's exec() d
 # the script's own directory on sys.path the way a plain `python file.py` invocation does.
 import config  # noqa: E402
 import draft_engine as de  # noqa: E402
+import draft_state  # noqa: E402
 import sleeper_client  # noqa: E402
-
-STATE_FILE = config.STATE_DIR / "draft_state.json"
 
 st.set_page_config(page_title="2026 Live Draft Tool", layout="wide")
 
@@ -57,87 +55,29 @@ def load_owner_drift() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Draft state persistence (spec Section 9: survive a crash at pick 90; undo; every
-# recalculation re-runs on each pick -- Streamlit's own rerun-on-interaction model
-# gives us the last part for free)
+# Active-draft-id tracking (work order 2026-08-16 item 0). st.session_state persists
+# across reruns within one running server process; the pointer file underneath it
+# (draft_state.save_active_draft_id) persists across a full restart too (spec Section
+# 9: survive a crash at pick 90). This is the ONLY thing that decides which draft's
+# state file gets loaded -- switching draft_id switches files, so there is nothing to
+# "clear": drafts A and B simply cannot cross-contaminate.
 # ---------------------------------------------------------------------------
-def load_state() -> dict:
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"picks": [], "sleeper_draft_id": ""}
+def get_active_draft_id() -> str | None:
+    if "active_draft_id" not in st.session_state:
+        st.session_state["active_draft_id"] = draft_state.load_active_draft_id()
+    return st.session_state["active_draft_id"]
 
 
-def save_state(state: dict) -> None:
-    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
-def next_overall_pick(state: dict) -> int:
-    return len(state["picks"]) + 1
-
-
-def manager_for_pick(overall: int) -> str:
-    seq = config.full_draft_sequence()
-    return seq[overall - 1][2] if 0 < overall <= len(seq) else "?"
-
-
-def add_pick(state: dict, player_row: pd.Series) -> None:
-    overall = next_overall_pick(state)
-    state["picks"].append(
-        {
-            "overall": overall,
-            "round": config.round_of_pick(overall),
-            "player": player_row["player"],
-            "position": player_row["position"],
-            "nfl_team": player_row["nfl_team"],
-            "manager": manager_for_pick(overall),
-        }
-    )
-    save_state(state)
-
-
-def undo_last_pick(state: dict) -> None:
-    if state["picks"]:
-        state["picks"].pop()
-        save_state(state)
-
-
-def drafted_name_keys(state: dict) -> set[str]:
-    return {config.normalize_name(p["player"]) for p in state["picks"]}
-
-
-def roster_counts_by_manager(state: dict) -> dict[str, dict[str, int]]:
-    counts: dict[str, dict[str, int]] = {}
-    for p in state["picks"]:
-        counts.setdefault(p["manager"], {}).setdefault(p["position"], 0)
-        counts[p["manager"]][p["position"]] += 1
-    return counts
-
-
-def owner_roster_state(state: dict) -> de.RosterState:
-    owner_picks = [p for p in state["picks"] if p["manager"] == config.OWNER]
-    current_overall = next_overall_pick(state)
-    return de.RosterState(
-        picks=owner_picks,
-        current_round=config.round_of_pick(current_overall),
-        current_overall_pick=current_overall,
-    )
-
-
-def owner_next_pick_number(state: dict) -> int:
-    current = next_overall_pick(state)
-    seq = config.full_draft_sequence()
-    for overall, _, manager in seq:
-        if overall >= current and manager == config.OWNER:
-            return overall
-    return current
+def set_active_draft_id(draft_id: str | None) -> None:
+    st.session_state["active_draft_id"] = draft_id
+    draft_state.save_active_draft_id(draft_id)
 
 
 # ---------------------------------------------------------------------------
 # Sidebar -- always-visible layer status strip, ADP source, live-polling status,
 # undo, and the dispersion/weight overrides.
 # ---------------------------------------------------------------------------
-def render_sidebar(state: dict) -> tuple[float, dict]:
+def render_sidebar(state: dict, draft_id: str | None) -> tuple[float, dict]:
     st.sidebar.header("Status")
     for name, flags in config.LAYERS.items():
         on = flags["available"] and flags["applies"]
@@ -151,15 +91,28 @@ def render_sidebar(state: dict) -> tuple[float, dict]:
     if ref["is_sleeper"]:
         connected = sleeper_client.check_available()
         st.sidebar.markdown("\U0001f7e2 Sleeper reachable" if connected else "\U0001f534 Sleeper unreachable -- manual entry only")
+        # Work order item 0: "the owner mocked in standard scoring against a PPR-derived
+        # board" -- the tool can't read Sleeper's scoring format, but showing exactly
+        # which file was loaded makes a stale/mismatched scrape visible immediately.
+        try:
+            st.sidebar.caption(f"ADP file: `{config.latest_sleeper_adp_raw_path().name}`")
+        except FileNotFoundError:
+            st.sidebar.caption("⚠️ No sleeper_adp_ppr_*.csv found in data/raw/")
     else:
         st.sidebar.markdown("⚠️ Live polling unavailable (`is_sleeper=False`) -- manual entry is the only path.")
 
-    current = next_overall_pick(state)
+    current = draft_state.next_overall_pick(state)
     st.sidebar.markdown(f"**Pick {current}** (Round {config.round_of_pick(current)})")
-    st.sidebar.markdown(f"**Nathan's next pick:** {owner_next_pick_number(state)}")
+    st.sidebar.markdown(f"**Nathan's next pick:** {draft_state.owner_next_pick_number(state)}")
+    st.sidebar.caption(f"Active draft: {draft_id or 'manual entry (no Sleeper draft_id)'}")
 
     if st.sidebar.button("Undo last pick", disabled=not state["picks"]):
-        undo_last_pick(state)
+        draft_state.undo_last_pick(state, draft_id)
+        st.rerun()
+
+    confirm_reset = st.sidebar.checkbox("Confirm reset (clears every pick logged under this draft)")
+    if st.sidebar.button("Reset draft", disabled=not confirm_reset):
+        draft_state.reset_draft(draft_id)
         st.rerun()
 
     if st.sidebar.button("Reload data (after rerunning the build)"):
@@ -186,7 +139,7 @@ def render_sidebar(state: dict) -> tuple[float, dict]:
 # ---------------------------------------------------------------------------
 def render_board(board: pd.DataFrame, state: dict) -> None:
     st.subheader("Board")
-    drafted = drafted_name_keys(state)
+    drafted = draft_state.drafted_name_keys(state)
     available = board[~board["name_key"].isin(drafted)].copy()
 
     cols = st.columns(4)
@@ -253,8 +206,8 @@ SEVERITY_ICON = {"High": "\U0001f534", "Medium": "\U0001f7e1", "Low": "⚪"}
 
 def render_recommender(board: pd.DataFrame, state: dict, owner_drift: pd.DataFrame) -> None:
     st.subheader("My Team / Recommender")
-    roster = owner_roster_state(state)
-    laporta_available = config.normalize_name("Sam LaPorta") not in drafted_name_keys(state)
+    roster = draft_state.owner_roster_state(state)
+    laporta_available = config.normalize_name("Sam LaPorta") not in draft_state.drafted_name_keys(state)
 
     result = de.evaluate_pick(board, roster, laporta_available, owner_drift)
 
@@ -287,19 +240,19 @@ def render_recommender(board: pd.DataFrame, state: dict, owner_drift: pd.DataFra
 # ---------------------------------------------------------------------------
 # Draft Room tab -- manual entry (always available) + optional Sleeper sync
 # ---------------------------------------------------------------------------
-def render_draft_room(board: pd.DataFrame, state: dict) -> None:
+def render_draft_room(board: pd.DataFrame, state: dict, draft_id: str | None) -> None:
     st.subheader("Draft Room")
-    drafted = drafted_name_keys(state)
+    drafted = draft_state.drafted_name_keys(state)
     available = board[~board["name_key"].isin(drafted)].sort_values("composite_score", ascending=False)
 
-    current = next_overall_pick(state)
-    st.markdown(f"**On the clock:** pick {current} (Round {config.round_of_pick(current)}) -- {manager_for_pick(current)}")
+    current = draft_state.next_overall_pick(state)
+    st.markdown(f"**On the clock:** pick {current} (Round {config.round_of_pick(current)}) -- {draft_state.manager_for_pick(current)}")
 
     options = [f"{r.player} ({r.position}, {r.nfl_team})" for r in available.itertuples()]
     choice = st.selectbox("Type to search the available-player list", options) if options else None
     if st.button("Draft this player", disabled=choice is None):
         idx = options.index(choice)
-        add_pick(state, available.iloc[idx])
+        draft_state.add_pick(state, draft_id, available.iloc[idx])
         st.rerun()
 
     st.divider()
@@ -307,8 +260,19 @@ def render_draft_room(board: pd.DataFrame, state: dict) -> None:
     if not config.REFERENCE_ADP.get("is_sleeper"):
         st.warning("Reference ADP source has is_sleeper=False -- manual entry is the only path this season.")
     else:
-        draft_id = st.text_input("Sleeper draft_id", value=state.get("sleeper_draft_id", ""))
-        state["sleeper_draft_id"] = draft_id
+        # Work order 2026-08-16 item 0: COMPARE the typed value against the currently
+        # active draft_id FIRST, and only THEN switch -- the original bug assigned
+        # `state["sleeper_draft_id"] = draft_id` unconditionally before any comparison
+        # was possible, so a new draft_id's picks got polled against the OLD draft's
+        # `known` overall-pick set and silently discarded as "already seen." Switching
+        # here means reloading a different per-draft state file (via st.rerun()), not
+        # mutating the current one -- so drafts A and B never share mutable state at all.
+        typed_draft_id = st.text_input("Sleeper draft_id", value=draft_id or "")
+        new_draft_id = typed_draft_id or None
+        if new_draft_id != draft_id:
+            set_active_draft_id(new_draft_id)
+            st.rerun()
+
         if st.button("Sync new picks from Sleeper", disabled=not draft_id):
             known = {p["overall"] for p in state["picks"]}
             try:
@@ -320,7 +284,7 @@ def render_draft_room(board: pd.DataFrame, state: dict) -> None:
                 key = config.normalize_name(p["player"])
                 match = board[board["name_key"] == key]
                 row = match.iloc[0] if len(match) else pd.Series({"player": p["player"], "position": p["position"], "nfl_team": p["nfl_team"]})
-                add_pick(state, row)
+                draft_state.add_pick(state, draft_id, row)
             if new_picks:
                 st.rerun()
 
@@ -342,8 +306,9 @@ def main() -> None:
         st.error("player_master.csv not found -- run `python build/pipeline.py` first.")
         return
 
-    state = load_state()
-    dispersion, weights = render_sidebar(state)
+    active_draft_id = get_active_draft_id()
+    state = draft_state.load_state(active_draft_id)
+    dispersion, weights = render_sidebar(state, active_draft_id)
 
     master = load_master()
     manager_priors = load_manager_priors()
@@ -353,12 +318,12 @@ def main() -> None:
     board = de.compute_composite(master, weights=weights, dispersion_multiplier=dispersion)
     board = de.compute_availability(
         board,
-        as_of_pick=next_overall_pick(state) - 1,
-        target_pick=owner_next_pick_number(state),
+        as_of_pick=draft_state.next_overall_pick(state) - 1,
+        target_pick=draft_state.owner_next_pick_number(state),
         manager_priors=manager_priors,
         team_bias=team_bias,
-        drafted_name_keys=drafted_name_keys(state),
-        owner_roster_by_manager=roster_counts_by_manager(state),
+        drafted_name_keys=draft_state.drafted_name_keys(state),
+        owner_roster_by_manager=draft_state.roster_counts_by_manager(state),
     )
 
     if board.attrs.get("disabled_composite_layers"):
@@ -370,7 +335,7 @@ def main() -> None:
     with tab_team:
         render_recommender(board, state, owner_drift)
     with tab_room:
-        render_draft_room(board, state)
+        render_draft_room(board, state, active_draft_id)
 
 
 if __name__ == "__main__":

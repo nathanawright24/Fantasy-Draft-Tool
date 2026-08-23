@@ -8,6 +8,57 @@ New file to place: `2026/PLAYER-INTEL-2026.md` (provided separately).
 
 ---
 
+## 0. 🚨 Draft-state reset bug — do this first, it breaks the dry run
+
+**Symptom reported.** Owner started a test draft, restarted with a new `draft_id`, and the old
+picks persisted.
+
+**Actual cause is worse.** `app/main.py:29` uses a single global state file
+(`state/draft_state.json`) not keyed by draft. Then at line 313:
+
+```python
+known = {p["overall"] for p in state["picks"]}
+new_picks = sleeper_client.poll_new_picks(draft_id, known)
+```
+
+`poll_new_picks` drops any pick whose `overall` is already in `known`. Those overall numbers came
+from the *previous* draft, so the new draft's picks 1, 2, 3 … were all filtered out as
+already-seen. **The sync reported success and silently discarded every new pick.** Stale display
+was the symptom; silent data loss was the bug.
+
+**Fix, three parts:**
+
+1. Key the state file per draft — `state/draft_state_{draft_id}.json`, plus a separate file for
+   manual-only drafts, so switching between them preserves both.
+2. Detect a `draft_id` change and clear picks. Note line 311 assigns
+   `state["sleeper_draft_id"] = draft_id` *before* any comparison is possible, destroying the old
+   value. **Compare first, then assign.**
+3. Add an explicit **"Reset draft"** button. The spec specified undo but never reset.
+
+Also display the loaded ADP filename in the UI. The owner mocked in standard scoring against a
+PPR-derived board; the tool cannot read Sleeper's scoring format, but showing
+`sleeper_adp_ppr_2026-08-16.csv` makes the mismatch visible.
+
+**Acceptance:** with picks logged under draft A, entering draft_id B clears the log and syncs B's
+picks from pick 1. Returning to A restores A's picks. A test must cover the switch, because this
+class of bug reports success while losing data.
+
+---
+
+## 0b. Extract draft state out of the UI file — prerequisite for the UI overhaul
+
+`main.py:64-137` holds `load_state`, `save_state`, `add_pick`, `undo_last_pick`,
+`roster_counts_by_manager`, `owner_next_pick_number` — business logic in the presentation layer.
+Move to `app/draft_state.py`.
+
+Do it **in the same pass as item 0** (same functions), and **before any UI work**. `streamlit`
+currently appears in `main.py` only and `draft_engine.py` is pure pandas — that separation is
+worth protecting, because it keeps a real frontend cheap to build in the offseason.
+
+**Acceptance:** `grep -l streamlit app/*.py` still returns only `app/main.py`; full suite green.
+
+---
+
 ## 1. 🚨 Re-anchor the survival curve to Sleeper — highest priority
 
 **Problem.** `app/draft_engine.py` (~lines 253-256, 280-284) builds every survival curve from

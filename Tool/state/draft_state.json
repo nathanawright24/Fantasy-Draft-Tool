@@ -39,7 +39,119 @@
       "position": "WR",
       "nfl_team": "LAR",
       "manager": "Nathan"
+    },
+    {
+      "overall": 6,
+      "round": 1,
+      "player": "James Cook",
+      "position": "RB",
+      "nfl_team": "BUF",
+      "manager": "Asa"
+    },
+    {
+      "overall": 7,
+      "round": 1,
+      "player": "Derrick Henry",
+      "position": "RB",
+      "nfl_team": "BAL",
+      "manager": "Greg"
+    },
+    {
+      "overall": 8,
+      "round": 1,
+      "player": "De'Von Achane",
+      "position": "RB",
+      "nfl_team": "MIA",
+      "manager": "Ryan"
+    },
+    {
+      "overall": 9,
+      "round": 1,
+      "player": "Jaxon Smith-Njigba",
+      "position": "WR",
+      "nfl_team": "SEA",
+      "manager": "Jayden"
+    },
+    {
+      "overall": 10,
+      "round": 1,
+      "player": "Puka Nacua",
+      "position": "WR",
+      "nfl_team": "LAR",
+      "manager": "Colin"
+    },
+    {
+      "overall": 11,
+      "round": 1,
+      "player": "Ashton Jeanty",
+      "position": "RB",
+      "nfl_team": "LV",
+      "manager": "Joseph"
+    },
+    {
+      "overall": 12,
+      "round": 1,
+      "player": "Saquon Barkley",
+      "position": "RB",
+      "nfl_team": "PHI",
+      "manager": "Kaiden"
+    },
+    {
+      "overall": 13,
+      "round": 2,
+      "player": "Omarion Hampton",
+      "position": "RB",
+      "nfl_team": "LAC",
+      "manager": "Kaiden"
+    },
+    {
+      "overall": 14,
+      "round": 2,
+      "player": "Kyren Williams",
+      "position": "RB",
+      "nfl_team": "LAR",
+      "manager": "Joseph"
+    },
+    {
+      "overall": 15,
+      "round": 2,
+      "player": "Josh Allen",
+      "position": "QB",
+      "nfl_team": "BUF",
+      "manager": "Colin"
+    },
+    {
+      "overall": 16,
+      "round": 2,
+      "player": "Jeremiyah Love",
+      "position": "RB",
+      "nfl_team": "ARI",
+      "manager": "Jayden"
+    },
+    {
+      "overall": 17,
+      "round": 2,
+      "player": "Chase Brown",
+      "position": "RB",
+      "nfl_team": "CIN",
+      "manager": "Ryan"
+    },
+    {
+      "overall": 18,
+      "round": 2,
+      "player": "CeeDee Lamb",
+      "position": "WR",
+      "nfl_team": "DAL",
+      "manager": "Greg"
+    },
+    {
+      "overall": 19,
+      "round": 2,
+      "player": "Justin Jefferson",
+      "position": "WR",
+      "nfl_team": "MIN",
+      "manager": "Asa"
     }
   ],
-  "sleeper_draft_id": ""
+  "sleeper_draft_id": "1397363462232883200"
 }

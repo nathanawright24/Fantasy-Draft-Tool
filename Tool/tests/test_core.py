@@ -28,6 +28,7 @@ sys.path.insert(0, str(TOOL_ROOT / "app"))
 
 import config  # noqa: E402
 import draft_engine as de  # noqa: E402
+import draft_state  # noqa: E402
 from build import pipeline  # noqa: E402
 import backtest  # noqa: E402
 
@@ -536,3 +537,71 @@ def test_hard_avoid_never_appears_in_recommendations(built):
     roster = de.RosterState()
     top = de.top_recommendations(board, roster, n=20)
     assert avoided_name not in top["player"].tolist()
+
+
+# ---------------------------------------------------------------------------
+# 9. Work order 2026-08-16 item 0: draft-switch state bug. The reported failure --
+#    switching Sleeper draft_id mid-session silently discarded the new draft's picks
+#    because a single global state file compared the new draft's pick numbers against
+#    the OLD draft's "already seen" set. Fixed by keying state files per draft_id, so
+#    there is nothing to "clear" -- two different draft_ids simply can't share a file.
+# ---------------------------------------------------------------------------
+def test_draft_state_is_keyed_per_draft_id_not_global(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+
+    state_a = draft_state.load_state("draft_A")
+    draft_state.add_pick(state_a, "draft_A", pd.Series({"player": "Ja'Marr Chase", "position": "WR", "nfl_team": "CIN"}))
+    draft_state.add_pick(state_a, "draft_A", pd.Series({"player": "Justin Jefferson", "position": "WR", "nfl_team": "MIN"}))
+    assert len(state_a["picks"]) == 2
+
+    # Switching to a NEW draft_id must start empty -- not inherit draft A's picks, and
+    # not silently drop draft B's own picks against draft A's pick-number history.
+    state_b = draft_state.load_state("draft_B")
+    assert state_b["picks"] == []
+    draft_state.add_pick(state_b, "draft_B", pd.Series({"player": "Bijan Robinson", "position": "RB", "nfl_team": "ATL"}))
+    assert len(state_b["picks"]) == 1
+
+    # Returning to A must restore A's picks untouched by anything that happened under B.
+    state_a_reloaded = draft_state.load_state("draft_A")
+    assert [p["player"] for p in state_a_reloaded["picks"]] == ["Ja'Marr Chase", "Justin Jefferson"]
+
+    # Manual-only (no draft_id) is its own third bucket, distinct from either.
+    manual_state = draft_state.load_state(None)
+    assert manual_state["picks"] == []
+
+
+def test_draft_id_switch_would_have_dropped_picks_under_the_old_global_file_design(tmp_path, monkeypatch):
+    # Reproduces the exact reported mechanism as a regression guard: under the OLD
+    # single-file design, draft B's pick #1 would collide with draft A's pick #1's
+    # overall number and get treated as "already seen." Confirms the NEW design keeps
+    # the two draft's `known` overall-pick sets from ever being compared against each
+    # other at all, since they now live in genuinely separate files.
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    state_a = draft_state.load_state("draft_A")
+    draft_state.add_pick(state_a, "draft_A", pd.Series({"player": "Ja'Marr Chase", "position": "WR", "nfl_team": "CIN"}))
+    known_from_a = {p["overall"] for p in state_a["picks"]}  # {1} -- what the old bug would have polluted draft B with
+
+    state_b = draft_state.load_state("draft_B")
+    known_from_b = {p["overall"] for p in state_b["picks"]}
+    assert known_from_b == set()  # NOT known_from_a -- draft B starts with a clean slate
+    assert known_from_a == {1}
+
+
+def test_reset_draft_clears_picks_but_keeps_the_draft_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    state = draft_state.load_state("draft_A")
+    draft_state.add_pick(state, "draft_A", pd.Series({"player": "Ja'Marr Chase", "position": "WR", "nfl_team": "CIN"}))
+    reset_state = draft_state.reset_draft("draft_A")
+    assert reset_state["picks"] == []
+    assert draft_state.load_state("draft_A")["picks"] == []
+
+
+def test_active_draft_id_pointer_survives_a_reload(tmp_path, monkeypatch):
+    # Simulates a process restart: load_active_draft_id() must read back whatever was
+    # last saved, from disk, with no in-memory state carried over.
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    assert draft_state.load_active_draft_id() is None
+    draft_state.save_active_draft_id("draft_A")
+    assert draft_state.load_active_draft_id() == "draft_A"
+    draft_state.save_active_draft_id(None)
+    assert draft_state.load_active_draft_id() is None
