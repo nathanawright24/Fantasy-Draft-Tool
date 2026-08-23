@@ -3,27 +3,27 @@ Availability-model backtest -- spec Section 12.5 / R25
 2024: 358 skill-position players have an ADP proxy from other seasons; 45 players drafted this season have none (one-off rookies, no other-season appearance) and are excluded from this season's pool.
 2025: 332 skill-position players have an ADP proxy from other seasons; 70 players drafted this season have none (one-off rookies, no other-season appearance) and are excluded from this season's pool.
 
-Overall Brier score: 0.0315 over 8096 (pick-window, player) observations
+Overall Brier score: 0.0351 over 8096 (pick-window, player) observations
 (0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time)
 
 By position (expect QB/TE worse -- 2026 scoring didn't exist when these drafts happened):
-  QB  n=  925  Brier=0.0344  mean_predicted=0.961  actual_survival_rate=0.963
-  RB  n= 2781  Brier=0.0304  mean_predicted=0.957  actual_survival_rate=0.975
-  TE  n= 1121  Brier=0.0287  mean_predicted=0.958  actual_survival_rate=0.971
-  WR  n= 3269  Brier=0.0326  mean_predicted=0.959  actual_survival_rate=0.970
+  QB  n=  925  Brier=0.0362  mean_predicted=0.964  actual_survival_rate=0.963
+  RB  n= 2781  Brier=0.0364  mean_predicted=0.951  actual_survival_rate=0.975
+  TE  n= 1121  Brier=0.0314  mean_predicted=0.965  actual_survival_rate=0.971
+  WR  n= 3269  Brier=0.0350  mean_predicted=0.959  actual_survival_rate=0.970
 
 Calibration by probability decile (well-calibrated means predicted ~= actual):
                   n  mean_predicted  actual_survival_rate
 decile                                                   
-(-0.001, 0.1]     3        0.029000              1.000000
-(0.1, 0.2]       13        0.157308              0.692308
-(0.2, 0.3]       12        0.238250              0.750000
-(0.3, 0.4]       24        0.350458              0.791667
-(0.4, 0.5]       21        0.466714              0.952381
-(0.5, 0.6]       32        0.557656              0.875000
-(0.6, 0.7]       58        0.650466              0.879310
-(0.7, 0.8]      150        0.757020              0.940000
-(0.8, 0.9]      448        0.862875              0.950893
-(0.9, 1.0]     7335        0.978609              0.975869
+(-0.001, 0.1]    15        0.070600              0.800000
+(0.1, 0.2]       14        0.159357              0.857143
+(0.2, 0.3]       12        0.246667              0.833333
+(0.3, 0.4]       29        0.354138              0.862069
+(0.4, 0.5]       36        0.461139              1.000000
+(0.5, 0.6]       58        0.557776              0.896552
+(0.6, 0.7]       88        0.653966              0.965909
+(0.7, 0.8]      169        0.756846              0.964497
+(0.8, 0.9]      420        0.858998              0.940476
+(0.9, 1.0]     7255        0.983912              0.975052
 
 Reminder: sanity check on calibration, not a tuning target. Two seasons of one league is a small sample -- overfitting to it is easy. A QB/TE miss above may reflect the OLD 4pt passing TD scoring rather than a broken model; do not retune BONUS_SIGMA_* or manager-priors weights to force this specific backtest closer to well-calibrated.

@@ -1,14 +1,20 @@
-Join report -- generated 2026-08-16T20:29:14
+Join report -- generated 2026-08-23T16:25:57
 ==============================================================================
 
 HARD FAILURES (0) -- these must be fixed before shipping
 ------------------------------------------------------------------------------
 
-NOTES / FLAGGED (146) -- unmatched names, coverage boundaries,
+NOTES / FLAGGED (154) -- unmatched names, coverage boundaries,
 low-sample flags. Never suppressed; eyeball before trusting a build.
 ------------------------------------------------------------------------------
   - priors/QB: rekeyed 'Cam Ward' to props' 'cameron ward' via NAME_ALIASES -- same real join key from here on, so both the team backfill and the player_master merge pick up the props row
   - priors/TE: rekeyed 'Chig Okonkwo' to props' 'chigoziem okonkwo' via NAME_ALIASES -- same real join key from here on, so both the team backfill and the player_master merge pick up the props row
+  - sleeper_adp: rekeyed 'kenneth walker' to 'ken walker' via NAME_ALIASES
+  - sleeper_adp: rekeyed 'cameron skattebo' to 'cam skattebo' via NAME_ALIASES
+  - nffc_adp: rekeyed 'kenneth walker' to 'ken walker' via NAME_ALIASES
+  - nffc_adp: rekeyed 'kenny gainwell' to 'kenneth gainwell' via NAME_ALIASES
+  - nffc_adp: rekeyed 'chig okonkwo' to 'chigoziem okonkwo' via NAME_ALIASES
+  - nffc_adp: rekeyed 'cam ward' to 'cameron ward' via NAME_ALIASES
   - nffc_adp: 'Rodgers, Aaron' has adp_n=13 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Smith, Geno' has adp_n=13 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Mendoza, Fernando' has adp_n=13 (< 15) -- shown but excluded from survival math
@@ -140,6 +146,7 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: 'Kmet, Cole' has adp_n=12 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Legette, Xavier' has adp_n=12 (< 15) -- shown but excluded from survival math
   - college_bias_recall: 26 players mapped via model recall (not sourced from any data file -- Sleeper's board carries no college field). Schools covered: ['Alabama', 'Florida', 'Illinois', 'Iowa State', 'Ohio State']. No Florida State or UCF players in the current pool could be confidently matched, so Cailen's and Jayden's college-bias discount has zero eligible targets this year -- a real coverage gap, not a bug.
+  - player_intel: 64 rows parsed from PLAYER-INTEL-2026.md ({'target': 57, 'fade': 7})
   - manager_priors: 'Asa' has only 1 main-league draft on file -- widen variance
   - manager_priors: 'Asa' shows a >=3-round main-vs-alt divergence at QB or TE -- model as bimodal, do not average into a false middle
   - manager_priors: 'Colin' has only 1 main-league draft on file -- widen variance
@@ -153,3 +160,4 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - RB: 75 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - TE: 48 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - WR: 141 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
+  - adp_source_offsets (top 150 by Sleeper rank): QB -13.2 (n=18); RB -2.6 (n=44); TE -23.2 (n=19); WR +9.0 (n=56) -- positive means Sleeper ranks that position later than NFFC's mean pick

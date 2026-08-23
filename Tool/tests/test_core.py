@@ -13,6 +13,7 @@ Four things worth locking in before trusting this tool mid-draft:
 """
 from __future__ import annotations
 
+import math
 import sys
 from collections import Counter
 from pathlib import Path
@@ -274,9 +275,47 @@ def test_survival_baseline_is_not_degenerate_past_adp_max():
             "reference_adp_rank": 30.0,
         }
     )
-    surv, used_fallback = de._survival_baseline_row(row, as_of_pick=44, target_pick=53)
-    assert not used_fallback
+    surv, anchor = de._survival_baseline_row(row, as_of_pick=44, target_pick=53)
+    assert anchor == "reference"
     assert 0.0 < surv < 0.5  # past adp_max=41 -> unlikely, but never impossible
+
+
+def test_survival_curve_is_anchored_on_sleeper_not_nffc():
+    # Work order 2026-08-16 item 1: the owner drafts on Sleeper, and the two ADP
+    # populations diverge systematically (measured: Sleeper ranks TE ~23 picks earlier
+    # than NFFC). The curve's median must track reference_adp_rank (Sleeper), using
+    # NFFC's min/max/n for dispersion shape only, not for where the curve is centered.
+    row = pd.Series(
+        {
+            "reference_adp_rank": 25.0,  # Sleeper: this TE goes ~25th
+            "comparison_adp_value": 48.0, "comparison_adp_min": 30.0, "comparison_adp_max": 70.0,
+            "comparison_adp_n": 40.0,
+        }
+    )
+    mu, sigma, used_secondary = de._fit_lognormal_from_adp(*de._resolve_survival_sources(row))
+    assert not used_secondary
+    assert math.exp(mu) == pytest.approx(25.0, rel=0.01)  # centered on Sleeper, not NFFC's 48
+    assert sigma > 0  # dispersion still borrowed from NFFC's observed range
+
+
+def test_survival_curve_falls_back_to_comparison_when_reference_missing():
+    row = pd.Series(
+        {
+            "reference_adp_rank": np.nan,
+            "comparison_adp_value": 48.0, "comparison_adp_min": 30.0, "comparison_adp_max": 70.0,
+            "comparison_adp_n": 40.0,
+        }
+    )
+    surv, anchor = de._survival_baseline_row(row, as_of_pick=0, target_pick=48)
+    assert anchor == "comparison"
+    assert 0.0 <= surv <= 1.0
+
+
+def test_survival_baseline_uninformed_when_neither_source_has_data():
+    row = pd.Series({"reference_adp_rank": np.nan, "comparison_adp_value": np.nan})
+    surv, anchor = de._survival_baseline_row(row, as_of_pick=10, target_pick=20)
+    assert anchor == "none"
+    assert surv == 0.5
 
 
 def test_survival_conditions_on_present():
@@ -347,3 +386,153 @@ def test_streamlit_app_smoke(built):
     at = AppTest.from_file(str(TOOL_ROOT / "app" / "main.py"), default_timeout=60)
     at.run()
     assert not at.exception
+
+
+# ---------------------------------------------------------------------------
+# 8. Work order 2026-08-16
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("player", ["Ken Walker III", "Cam Skattebo", "Kenneth Gainwell"])
+def test_nickname_aliases_join_to_both_adp_sources(built, player):
+    # Item 2: each of these had zero market data from at least one ADP source because
+    # props' spelling didn't match that source's. Real, reproduced bugs -- not
+    # hypothetical -- found by the top-150 hard-failure gate below.
+    master, _ = built
+    row = master[master["player"] == player].iloc[0]
+    assert pd.notna(row["reference_adp_rank"])
+    assert pd.notna(row["comparison_adp_value"])
+
+
+def test_top150_join_failure_is_a_hard_failure_not_a_note():
+    # Item 2's severity reclassification: reproduce the exact Ken Walker III shape
+    # (top-150 rank, present in the raw ADP source, absent from player_master) with a
+    # synthetic frame so the check doesn't depend on this season's real data, and
+    # confirm the mechanism actually flags it before/after a name fix -- matching the
+    # acceptance check's own framing ("non-zero before the alias, zero after").
+    master = pd.DataFrame({"name_key": ["chase brown"], "position": ["RB"], "reference_adp_rank": [4.0], "comparison_adp_value": [3.0]})
+    ref_df = pd.DataFrame({"name_key": ["chase brown", "kenneth walker"], "position": ["RB", "RB"],
+                            "adp_rank": [4, 15], "player_display": ["Chase Brown", "Kenneth Walker III"]})
+    cmp_df = pd.DataFrame({"name_key": ["chase brown"], "position": ["RB"], "adp_rank": [3], "player_display": ["Chase Brown"]})
+
+    report_before = pipeline.JoinReport()
+    pipeline.validate_top_adp_coverage(master, ref_df, cmp_df, report_before, top_n=150)
+    assert any("kenneth walker" in m.lower() or "walker" in m.lower() for m in report_before.hard_failures)
+
+    master_fixed = pd.concat([master, pd.DataFrame({"name_key": ["kenneth walker"], "position": ["RB"], "reference_adp_rank": [15.0], "comparison_adp_value": [np.nan]})], ignore_index=True)
+    report_after = pipeline.JoinReport()
+    pipeline.validate_top_adp_coverage(master_fixed, ref_df, cmp_df, report_after, top_n=150)
+    assert not report_after.hard_failures
+
+
+def test_top150_coverage_check_excludes_kickers():
+    # A real top-150 Sleeper kicker correctly has NO player_master row (R22 -- the
+    # tool carries zero individual-kicker data) and must not be flagged as a failure.
+    master = pd.DataFrame({"name_key": ["chase brown"], "position": ["RB"], "reference_adp_rank": [4.0], "comparison_adp_value": [3.0]})
+    ref_df = pd.DataFrame({"name_key": ["brandon aubrey"], "position": ["K"], "adp_rank": [128], "player_display": ["Brandon Aubrey"]})
+    cmp_df = pd.DataFrame({"name_key": [], "position": [], "adp_rank": [], "player_display": []})
+    report = pipeline.JoinReport()
+    pipeline.validate_top_adp_coverage(master, ref_df, cmp_df, report, top_n=150)
+    assert not report.hard_failures
+
+
+def test_adp_source_offsets_reproduces_measured_divergence(built):
+    # Item 1's acceptance check: adp_source_offsets.csv should reproduce the measured
+    # per-position divergence (TE/QB earlier on Sleeper, WR later) within rounding --
+    # computed from real data at build time, not hard-coded (spec: "they are a
+    # property of the site, not a constant").
+    offsets = pd.read_csv(config.ADP_SOURCE_OFFSETS_PATH).set_index("position")["mean_offset_reference_minus_comparison"]
+    assert offsets["TE"] < -10  # Sleeper ranks TE meaningfully earlier than NFFC
+    assert offsets["QB"] < -5  # ditto for QB
+    assert offsets["WR"] > 0  # Sleeper ranks WR later than NFFC
+
+
+def test_survival_anchor_is_a_real_config_toggle():
+    # The work order explicitly asked for SURVIVAL_ANCHOR / SURVIVAL_DISPERSION_SOURCE
+    # as actual config-driven behavior, not documentation of a hard-coded choice.
+    # Flipping the anchor should flip which field the fit centers on.
+    row = pd.Series({"reference_adp_rank": 25.0, "comparison_adp_value": 48.0,
+                      "comparison_adp_min": 30.0, "comparison_adp_max": 70.0, "comparison_adp_n": 40.0})
+    saved = config.SURVIVAL_ANCHOR
+    try:
+        config.SURVIVAL_ANCHOR = "reference"
+        mu_ref, _, _ = de._fit_lognormal_from_adp(*de._resolve_survival_sources(row))
+        config.SURVIVAL_ANCHOR = "comparison"
+        mu_cmp, _, _ = de._fit_lognormal_from_adp(*de._resolve_survival_sources(row))
+    finally:
+        config.SURVIVAL_ANCHOR = saved
+    assert math.exp(mu_ref) == pytest.approx(25.0, rel=0.01)
+    assert math.exp(mu_cmp) == pytest.approx(48.0, rel=0.01)
+
+
+def test_intel_parser_skips_other_markdown_tables_in_the_file(tmp_path):
+    # The doc has multiple `| ... |` tables (tag legend, divergence tables). Only the
+    # one whose header contains player/position/pick_window/tag should be parsed.
+    md = tmp_path / "intel.md"
+    md.write_text(
+        "\n".join(
+            [
+                "| Tag | Effect |",
+                "|---|---|",
+                "| target | nudge |",
+                "",
+                "| player | position | pick_window | priority | tag | note |",
+                "|---|---|---|---|---|---|",
+                "| Puka Nacua | WR | 5 | 1 | target | good |",
+                "| Quinshon Judkins | RB | 53 | | fade | dislike |",
+                "",
+                "| Position | Sleeper - NFFC |",
+                "|---|---|",
+                "| TE | -23.2 |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    saved = config.PLAYER_INTEL_MD_PATH
+    try:
+        config.PLAYER_INTEL_MD_PATH = md
+        report = pipeline.JoinReport()
+        intel = pipeline.parse_player_intel(report)
+    finally:
+        config.PLAYER_INTEL_MD_PATH = saved
+    assert len(intel) == 2
+    assert set(intel["tag"]) == {"target", "fade"}
+    assert not report.hard_failures
+
+
+def test_intel_nudge_is_capped_and_toggleable(built):
+    master, _ = built
+    saved_applies = config.LAYERS["player_intel"]["applies"]
+    try:
+        config.LAYERS["player_intel"]["applies"] = False
+        board_off = de.compute_composite(master)
+
+        config.LAYERS["player_intel"]["applies"] = True
+        board_on = de.compute_composite(master)
+    finally:
+        config.LAYERS["player_intel"]["applies"] = saved_applies
+
+    # Toggling off restores the exact prior composite (acceptance check).
+    pd.testing.assert_series_equal(
+        board_off["composite_score"], board_on["composite_score"] - board_on["intel_nudge_pts"], check_names=False
+    )
+    tagged = board_on[board_on["intel_tag"].isin(["target", "fade"])]
+    assert (tagged["intel_nudge_pts"].abs() <= config.INTEL_NUDGE_CAP + 1e-9).all()
+    assert (board_on.loc[board_on["intel_tag"] == "target", "intel_nudge_pts"] > 0).all()
+    assert (board_on.loc[board_on["intel_tag"] == "fade", "intel_nudge_pts"] < 0).all()
+
+
+def test_hard_avoid_never_appears_in_recommendations(built):
+    master, _ = built
+    board = de.compute_composite(master)
+    # No real 2026 row is tagged hard_avoid -- inject one so the filter is actually
+    # exercised rather than trivially passing on an empty case.
+    board = board.copy()
+    top_player_idx = board["composite_score"].idxmax()
+    board.loc[top_player_idx, "intel_tag"] = "hard_avoid"
+    avoided_name = board.loc[top_player_idx, "player"]
+
+    manager_priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_availability(board, as_of_pick=0, target_pick=5, manager_priors=manager_priors, team_bias=team_bias)
+    roster = de.RosterState()
+    top = de.top_recommendations(board, roster, n=20)
+    assert avoided_name not in top["player"].tolist()

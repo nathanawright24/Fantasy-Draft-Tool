@@ -204,6 +204,7 @@ def render_board(board: pd.DataFrame, state: dict) -> None:
         "player", "position", "nfl_team", "composite_score", "survival_probability",
         "vorp", "ppr_base", "bonus_est_ppr", "factor_score_recomputed", "archetype",
         "reference_adp_rank", "comparison_adp_rank", "adp_rank_divergence",
+        "intel_tag", "intel_windows", "intel_note",
     ]
     st.dataframe(
         view[display_cols].style.format(
@@ -227,8 +228,19 @@ def render_board(board: pd.DataFrame, state: dict) -> None:
                    help=f"factor_score_recomputed={row.get('factor_score_recomputed')}, archetype={row.get('archetype')}")
         c4.metric("Market (norm)", "n/a" if pd.isna(row["market_norm"]) else f"{row['market_norm']:.0f}",
                    help=f"reference={row.get('reference_adp_rank')}, comparison={row.get('comparison_adp_rank')}")
+        if pd.notna(row.get("intel_tag")):
+            nudge = row.get("intel_nudge_pts", 0.0)
+            st.metric(
+                f"Intel: {row['intel_tag']}", f"{nudge:+.1f} pts" if nudge else "filtered from recommendations",
+                help=f"pick window(s) {row.get('intel_windows')}, priority {row.get('intel_priority')} -- {row.get('intel_note') or 'no note'}",
+            )
+        anchor = row.get("availability_anchor")
+        if anchor == "comparison":
+            st.caption("Survival curve anchored on NFFC (comparison) -- this player has no Sleeper rank.")
+        elif anchor == "none":
+            st.caption("No ADP from either source for this player -- survival is an uninformed 0.5.")
         if row.get("availability_used_fallback"):
-            st.caption("Availability used the generic ADP fallback curve for this player (NFFC min/max unusable, or manager_priors disabled).")
+            st.caption("Manager-priors refinement did not apply (layer disabled) -- showing the baseline curve only.")
         if row.get("team_conflict"):
             st.warning("Reference and comparison ADP disagree on this player's NFL team.")
 

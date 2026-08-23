@@ -62,6 +62,10 @@ Settled in the scoping conversation. These override the open items they correspo
 | R23 | Raw inputs | Committed to git — clean clone must test green | — |
 | R24 | Sequencing | Pipeline correctness (R16–R21) **before any UI work** | §10 |
 | R25 | Backtest | Replay 2024 + 2025 pick-by-pick and score availability calibration (§12.5) | — |
+| R26 | Survival anchor | **Centre on Sleeper `reference_adp_rank`; NFFC `min/max/n` for dispersion only.** Sleeper is the draft population | R19, §7 |
+| R27 | Source offsets | Computed at build time into `adp_source_offsets.csv`, never hard-coded | §4.4 |
+| R28 | Intel layer | `2026/PLAYER-INTEL-<year>.md` → parsed. `target`/`fade` capped at ±10 VOR; `hard_avoid` is a filter | — |
+| R29 | Join severity | Unmatched top-150 ADP player = **hard failure**, not a note | §5.3 |
 
 ---
 

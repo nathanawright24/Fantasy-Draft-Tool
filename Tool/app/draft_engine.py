@@ -198,6 +198,19 @@ def compute_composite(
         + norm_weights.get("factor", 0) * df["factor_norm"].fillna(0)
         + norm_weights.get("market", 0) * df["market_norm"].fillna(0)
     )
+
+    # Player intel (work order 2026-08-16 item 3): target/fade are a bounded nudge,
+    # hard-capped at config.INTEL_NUDGE_CAP VOR points -- not weighted, not scaled by
+    # anything else, so toggling the layer off restores the exact prior composite and
+    # the cap can never be silently raised by another layer's math. hard_avoid gets NO
+    # points nudge here (INTEL_TAG_SIGN has no entry for it) -- it is a filter applied
+    # in top_recommendations, never arithmetic on the score.
+    if config.layer_on("player_intel") and "intel_tag" in df.columns:
+        df["intel_nudge_pts"] = df["intel_tag"].map(config.INTEL_TAG_SIGN).fillna(0.0) * config.INTEL_NUDGE_CAP
+        df["composite_score"] = df["composite_score"] + df["intel_nudge_pts"]
+    else:
+        df["intel_nudge_pts"] = 0.0
+
     df.attrs["disabled_composite_layers"] = disabled
     df.attrs["enabled_composite_weights"] = norm_weights
     df.attrs["replacement_level"] = replacement_level
@@ -207,68 +220,122 @@ def compute_composite(
 # ---------------------------------------------------------------------------
 # Availability model (spec Section 7, survival curve rewritten per 12.2 / R19)
 # ---------------------------------------------------------------------------
-def _fit_lognormal_from_adp(adp_value, adp_min, adp_max, adp_n) -> tuple[float, float] | None:
-    """Unbounded lognormal fit to NFFC's own ADP columns (R19), replacing the old
-    triangular/PERT curve -- both of those have support exactly [adp_min, adp_max],
-    which is why a target past adp_max used to clip to a hard 0.0 (`1.0 ** hazard ==
-    1.0` for anyone still inside the range, killing the manager-priors signal outright).
+_ADP_SOURCE_FIELDS = {
+    # source -> (anchor_field, min_field, max_field, n_field). Sleeper's ingestion never
+    # populates min/max/n (its ADP is a bare sequential rank, not an observed-range
+    # export), which is exactly why it can anchor but not disperse.
+    "reference": ("reference_adp_rank", None, None, None),
+    "comparison": ("comparison_adp_value", "comparison_adp_min", "comparison_adp_max", "comparison_adp_n"),
+}
 
-    median = adp_value; sigma is chosen so the curve's [1/(n+1), n/(n+1)] quantiles --
-    the expected extreme order statistics of n real draws -- bracket [adp_min, adp_max].
-    This is also why small adp_n widens the curve automatically: fewer drafts means the
-    observed min/max only pins down a LESS extreme quantile pair (n=6 brackets roughly
-    the 14th-86th percentile, not the ~2nd-98th an n=51 sample would), so the same
-    numeric gap between min and max implies a wider sigma -- a continuous function of
-    sample size instead of the old ADP_MIN_N=15 binary cliff.
 
-    Falls back to a fixed generic sigma (still unbounded, still no hard clip) when the
-    empirical range is missing or degenerate.
+def _resolve_survival_sources(row: pd.Series) -> tuple[float, float, float, float, float]:
+    """Routes config.SURVIVAL_ANCHOR / config.SURVIVAL_DISPERSION_SOURCE to actual
+    row fields. Returns (primary_anchor, secondary_anchor, dispersion_value,
+    dispersion_min, dispersion_max, dispersion_n)."""
+    primary_src = config.SURVIVAL_ANCHOR
+    secondary_src = "comparison" if primary_src == "reference" else "reference"
+    disp_src = config.SURVIVAL_DISPERSION_SOURCE
+
+    primary_anchor = row.get(_ADP_SOURCE_FIELDS[primary_src][0])
+    secondary_anchor = row.get(_ADP_SOURCE_FIELDS[secondary_src][0])
+    disp_anchor_field, disp_min_field, disp_max_field, disp_n_field = _ADP_SOURCE_FIELDS[disp_src]
+    dispersion_value = row.get(disp_anchor_field)
+    dispersion_min = row.get(disp_min_field) if disp_min_field else np.nan
+    dispersion_max = row.get(disp_max_field) if disp_max_field else np.nan
+    dispersion_n = row.get(disp_n_field) if disp_n_field else np.nan
+    return primary_anchor, secondary_anchor, dispersion_value, dispersion_min, dispersion_max, dispersion_n
+
+
+def _fit_lognormal_from_adp(
+    primary_anchor, secondary_anchor, dispersion_value, dispersion_min, dispersion_max, dispersion_n
+) -> tuple[float, float, bool] | None:
+    """Unbounded lognormal fit (R19), replacing the old triangular/PERT curve -- both
+    of those have support exactly [adp_min, adp_max], which is why a target past
+    adp_max used to clip to a hard 0.0.
+
+    Re-anchored per the 2026-08-16 work order item 1: the owner drafts on Sleeper, and
+    the two ADP populations diverge systematically (measured: Sleeper ranks TE ~23 and
+    QB ~13 picks earlier than NFFC's mean pick, WR ~9 later -- see
+    `compute_adp_source_offsets` in build/pipeline.py). Centering on NFFC was therefore
+    calibrating the model to the wrong draft population. The curve's CENTER (median) is
+    `primary_anchor` (`config.SURVIVAL_ANCHOR`, "reference" i.e. Sleeper by default);
+    dispersion comes from `config.SURVIVAL_DISPERSION_SOURCE` ("comparison" i.e. NFFC by
+    default) -- 51 real observed drafts is still the only empirical spread data
+    available, and that spread describes draft variance generally, not anything
+    specific to NFFC's level.
+
+    A rank (Sleeper) used as `primary_anchor` is an ordinal, not a mean pick number --
+    rank N approx pick N only holds if the field drafts close to consensus. Accepted
+    here and stated, not hidden.
+
+    Sigma is fit the same way as before (quantile-bracket algebra against the
+    dispersion source's OWN center, since that's the distribution it was actually
+    measured from: the curve's [1/(n+1), n/(n+1)] quantiles bracket
+    [dispersion_min, dispersion_max]) and then carried over as a pure dispersion
+    magnitude onto the RELOCATED (primary-anchor) mu -- "relocate," not "re-fit."
+
+    Falls back to `secondary_anchor` when `primary_anchor` is missing, and to a fixed
+    generic sigma when the dispersion source's empirical range is also missing,
+    degenerate, or (per `_ADP_SOURCE_FIELDS`) simply doesn't exist for that source.
+    Returns (mu, sigma, used_secondary_anchor) -- the third element is the "which
+    anchor did this row use" flag the UI surfaces.
     """
-    if pd.isna(adp_value) or adp_value <= 0:
+    used_secondary_anchor = False
+    if pd.notna(primary_anchor) and primary_anchor > 0:
+        anchor_value = primary_anchor
+    elif pd.notna(secondary_anchor) and secondary_anchor > 0:
+        anchor_value = secondary_anchor
+        used_secondary_anchor = True
+    else:
         return None
-    mu = math.log(adp_value)
+    mu = math.log(anchor_value)
+
     sigma = config.GENERIC_LOGNORMAL_SIGMA
-    if pd.notna(adp_n) and adp_n >= 2 and pd.notna(adp_min) and pd.notna(adp_max) and adp_max > adp_min > 0:
-        lo_q, hi_q = 1.0 / (adp_n + 1), adp_n / (adp_n + 1)
+    have_range = (
+        pd.notna(dispersion_n) and dispersion_n >= 2
+        and pd.notna(dispersion_min) and pd.notna(dispersion_max)
+        and dispersion_max > dispersion_min > 0
+        and pd.notna(dispersion_value) and dispersion_value > 0
+    )
+    if have_range:
+        dispersion_mu = math.log(dispersion_value)
+        lo_q, hi_q = 1.0 / (dispersion_n + 1), dispersion_n / (dispersion_n + 1)
         z_lo, z_hi = norm.ppf(lo_q), norm.ppf(hi_q)
         candidates = []
         if z_lo < -1e-6:
-            candidates.append((math.log(adp_min) - mu) / z_lo)
+            candidates.append((math.log(dispersion_min) - dispersion_mu) / z_lo)
         if z_hi > 1e-6:
-            candidates.append((math.log(adp_max) - mu) / z_hi)
+            candidates.append((math.log(dispersion_max) - dispersion_mu) / z_hi)
         if candidates:
             sigma = max(float(np.mean(candidates)), 0.05)
-    return mu, sigma
+    return mu, sigma, used_secondary_anchor
 
 
-def _survival_baseline_row(row: pd.Series, as_of_pick: int, target_pick: int) -> tuple[float, bool]:
+def _fit_from_row(row: pd.Series) -> tuple[float, float, bool] | None:
+    return _fit_lognormal_from_adp(*_resolve_survival_sources(row))
+
+
+def _survival_baseline_row(row: pd.Series, as_of_pick: int, target_pick: int) -> tuple[float, str]:
     """P(survive to target_pick | survived to as_of_pick) = S(target)/S(as_of) (R19's
-    "independent of distribution choice" conditioning) from either the fitted lognormal
-    or, when NFFC's ADP is unusable for this player, the widened generic normal-on-rank
-    fallback (spec Section 4.2's 'built alongside the primary path, not after'). This
-    baseline IS what compute_availability returns untouched when manager_priors doesn't
-    apply -- the fallback is a first-class path, not an error branch.
+    "independent of distribution choice" conditioning) from the fitted lognormal, or,
+    when NEITHER ADP source has anything for this player, a coin-flip 0.5 (spec Section
+    4.2's 'built alongside the primary path, not after' fallback carried to its limit).
+
+    Returns (probability, anchor) where anchor is "reference" (Sleeper, the normal
+    case), "comparison" (NFFC, used only when Sleeper has no rank for this player), or
+    "none" (neither source had anything).
     """
-    params = None
-    if row.get("comparison_adp_usable") and pd.notna(row.get("comparison_adp_value")):
-        params = _fit_lognormal_from_adp(
-            row.get("comparison_adp_value"), row.get("comparison_adp_min"),
-            row.get("comparison_adp_max"), row.get("comparison_adp_n"),
-        )
-    if params is not None:
-        mu, sigma = params
-        s_target = float(lognorm.sf(max(target_pick, 1e-6), s=sigma, scale=math.exp(mu)))
-        s_asof = float(lognorm.sf(max(as_of_pick, 1e-6), s=sigma, scale=math.exp(mu))) if as_of_pick > 0 else 1.0
-        used_fallback = False
-    else:
-        adp_rank = row.get("reference_adp_rank")
-        if pd.isna(adp_rank):
-            return 0.5, True
-        s_target = float(norm.sf(target_pick, loc=adp_rank, scale=config.GENERIC_ADP_SPREAD_PICKS))
-        s_asof = float(norm.sf(as_of_pick, loc=adp_rank, scale=config.GENERIC_ADP_SPREAD_PICKS)) if as_of_pick > 0 else 1.0
-        used_fallback = True
+    params = _fit_from_row(row)
+    if params is None:
+        return 0.5, "none"
+    mu, sigma, used_secondary_anchor = params
+    s_target = float(lognorm.sf(max(target_pick, 1e-6), s=sigma, scale=math.exp(mu)))
+    s_asof = float(lognorm.sf(max(as_of_pick, 1e-6), s=sigma, scale=math.exp(mu))) if as_of_pick > 0 else 1.0
     surv = s_target / s_asof if s_asof > 1e-9 else 0.0
-    return float(np.clip(surv, 0.0, 1.0)), used_fallback
+    secondary_src = "comparison" if config.SURVIVAL_ANCHOR == "reference" else "reference"
+    anchor = secondary_src if used_secondary_anchor else config.SURVIVAL_ANCHOR
+    return float(np.clip(surv, 0.0, 1.0)), anchor
 
 
 def _lognormal_fit_arrays(pool: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -277,17 +344,10 @@ def _lognormal_fit_arrays(pool: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, n
     number, only its survival/hazard VALUE does."""
     n = len(pool)
     mu_arr, sigma_arr, has_fit = np.zeros(n), np.zeros(n), np.zeros(n, dtype=bool)
-    usable = pool.get("comparison_adp_usable", pd.Series(False, index=pool.index)).to_numpy()
-    value = pool.get("comparison_adp_value", pd.Series(np.nan, index=pool.index)).to_numpy()
-    adp_min = pool.get("comparison_adp_min", pd.Series(np.nan, index=pool.index)).to_numpy()
-    adp_max = pool.get("comparison_adp_max", pd.Series(np.nan, index=pool.index)).to_numpy()
-    adp_n = pool.get("comparison_adp_n", pd.Series(np.nan, index=pool.index)).to_numpy()
-    for i in range(n):
-        if not usable[i] or pd.isna(value[i]):
-            continue
-        params = _fit_lognormal_from_adp(value[i], adp_min[i], adp_max[i], adp_n[i])
+    for i, row in enumerate(pool.to_dict("records")):
+        params = _fit_lognormal_from_adp(*_resolve_survival_sources(row))
         if params is not None:
-            mu_arr[i], sigma_arr[i] = params
+            mu_arr[i], sigma_arr[i], _ = params
             has_fit[i] = True
     return mu_arr, sigma_arr, has_fit
 
@@ -539,17 +599,21 @@ def compute_availability(
     owner_roster_by_manager = owner_roster_by_manager or {}
     drafted_name_keys = drafted_name_keys or set()
 
-    baseline, used_fallback = [], []
+    baseline, anchor = [], []
     for _, row in df.iterrows():
-        surv, fb = _survival_baseline_row(row, as_of_pick, target_pick)
+        surv, a = _survival_baseline_row(row, as_of_pick, target_pick)
         baseline.append(surv)
-        used_fallback.append(fb)
+        anchor.append(a)
     df["survival_baseline"] = baseline
-    df["availability_used_fallback"] = used_fallback
+    # "reference" (Sleeper, the normal case) | "comparison" (NFFC, only when Sleeper has
+    # no rank for this player) | "none" (neither source had anything) -- work order item
+    # 1's "flag column so the UI can show which anchor a row used."
+    df["availability_anchor"] = anchor
     # Floor/ceiling, not just [0, 1]: a literal 0.0% reads as "impossible" in the UI, and
     # spec Section 5 rule #11 makes the same point about bust rates -- never render false
     # certainty in either direction, even when the model's point estimate is extreme.
     df["survival_baseline"] = df["survival_baseline"].clip(0.005, 0.995)
+    df["availability_used_fallback"] = False  # whether the manager-priors refinement below applied at all
 
     if not config.layer_on("manager_priors"):
         df["survival_probability"] = df["survival_baseline"]
@@ -843,12 +907,41 @@ def roster_summary(roster: RosterState) -> dict:
     }
 
 
+def _intel_window_boost(df: pd.DataFrame, current_pick: int, tolerance: int = 6) -> pd.Series:
+    """Work order 2026-08-16 item 3: 'a player tagged for pick 53 should surface as a
+    target at 53, not at 20.' A modest ranking boost -- NOT a composite_score change,
+    that's the separate, hard-capped `intel_nudge_pts` -- for target-tagged players
+    whose `intel_windows` includes a pick near the current one, so the recommender
+    surfaces them right when they're actionable instead of uniformly all draft long."""
+    boost = pd.Series(1.0, index=df.index)
+    if not config.layer_on("player_intel") or "intel_windows" not in df.columns:
+        return boost
+
+    def _near_current(windows) -> bool:
+        if pd.isna(windows) or not str(windows).strip():
+            return False
+        return any(abs(int(w.strip()) - current_pick) <= tolerance for w in str(windows).split(","))
+
+    is_target = df.get("intel_tag") == "target"
+    near = df["intel_windows"].apply(_near_current)
+    boost.loc[is_target & near] = 1.15
+    return boost
+
+
 def top_recommendations(board_with_composite_and_availability: pd.DataFrame, roster: RosterState, n: int = 10) -> pd.DataFrame:
     df = board_with_composite_and_availability
+    if config.layer_on("player_intel") and "intel_tag" in df.columns:
+        # hard_avoid is a FILTER, not a nudge (work order item 3) -- never surfaced as
+        # a recommendation regardless of composite value, and never given arithmetic.
+        df = df[df["intel_tag"] != "hard_avoid"]
     needs = {pos: t - roster.count(pos) for pos, t in config.ROSTER_TARGET.items()}
     df = df.copy()
     df["roster_need"] = df["position"].map(needs).fillna(0).clip(lower=0)
-    df["need_adjusted_score"] = df["composite_score"] * (1 + 0.05 * df["roster_need"].clip(upper=3))
+    df["need_adjusted_score"] = (
+        df["composite_score"]
+        * (1 + 0.05 * df["roster_need"].clip(upper=3))
+        * _intel_window_boost(df, roster.current_overall_pick)
+    )
     return df.sort_values("need_adjusted_score", ascending=False).head(n)
 
 

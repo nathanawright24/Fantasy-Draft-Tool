@@ -30,6 +30,8 @@ JOIN_REPORT_PATH = DATA_DERIVED / "join_report.txt"
 PLAYER_MASTER_PATH = DATA_DERIVED / "player_master.csv"
 MANAGER_PRIORS_PATH = DATA_DERIVED / "manager_priors.csv"
 TEAM_BIAS_PATH = DATA_DERIVED / "team_bias.csv"
+ADP_SOURCE_OFFSETS_PATH = DATA_DERIVED / "adp_source_offsets.csv"
+PLAYER_INTEL_PATH = DATA_DERIVED / "player_intel.csv"
 REFERENCE_ADP_PATH = DATA_EXTERNAL / "reference_adp.csv"
 COMPARISON_ADP_PATH = DATA_EXTERNAL / "comparison_adp.csv"
 COLLEGE_BIAS_PATH = DATA_EXTERNAL / "college_bias_recall.csv"
@@ -43,6 +45,10 @@ ALL_DRAFT_PICKS_PATH = DATA_DRAFTS / "all_draft_picks_2022-2025.csv"
 DATA_RAW = TOOL_ROOT / "data" / "raw"
 NFFC_ADP_RAW_PATH = DATA_RAW / "ADP.tsv"
 SLEEPER_ADP_RAW_GLOB = "sleeper_adp_ppr_*.csv"
+
+# Owner-authored intel, refreshed each season; template for future years documented in
+# its own header (work order 2026-08-16 item 3).
+PLAYER_INTEL_MD_PATH = DATA_2026 / "PLAYER-INTEL-2026.md"
 
 POSITIONS = ["QB", "RB", "WR", "TE"]
 
@@ -183,6 +189,7 @@ LAYERS = {
     "nfl_team_bias":    {"available": True, "applies": True},
     "college_bias":     {"available": True, "applies": True},
     "archetype_priors": {"available": True, "applies": True},
+    "player_intel":     {"available": True, "applies": True},
 }
 
 
@@ -213,6 +220,19 @@ GENERIC_LOGNORMAL_SIGMA = 0.35  # fallback dispersion when adp_value exists but 
 GENERIC_ADP_SPREAD_PICKS = 24  # fallback normal-curve spread when there's no ADP mean pick, just a rank
 AVAILABILITY_N_SIMS = 2000  # spec 12.3: "cost is negligible: 8 picks x ~2,000 sims"
 
+# Work order 2026-08-16 item 1: the owner drafts on Sleeper, and Sleeper vs NFFC diverge
+# systematically (measured: Sleeper ranks TE ~23 and QB ~13 picks earlier than NFFC's
+# mean pick, WR ~9 later -- see build/pipeline.py's compute_adp_source_offsets). The
+# survival curve's CENTER must reflect the population the owner actually drafts against;
+# its DISPERSION should still come from wherever real observed-range data exists.
+# "reference" = Sleeper, "comparison" = NFFC -- matching REFERENCE_ADP/COMPARISON_ADP's
+# own naming above. In practice only NFFC's ingestion populates min/max/n at all
+# (Sleeper's ADP is a bare sequential rank), so setting SURVIVAL_DISPERSION_SOURCE to
+# "reference" degrades to GENERIC_LOGNORMAL_SIGMA rather than erroring -- documented
+# behavior, not a bug, if this ever gets flipped.
+SURVIVAL_ANCHOR = "reference"
+SURVIVAL_DISPERSION_SOURCE = "comparison"
+
 # ---------------------------------------------------------------------------
 # Composite scoring weights (spec Section 6.5) -- single editable dict,
 # renormalized at runtime over whichever layers are actually enabled.
@@ -224,6 +244,19 @@ COMPOSITE_WEIGHTS = {
     "market": 0.15,    # blended reference-ADP percentile
 }
 INJURY_WEIGHT = 1.5  # weight injury more heavily than the source (best-ball has no safety net)
+
+# ---------------------------------------------------------------------------
+# Player intel layer (work order 2026-08-16 item 3). `target`/`fade` are a BOUNDED
+# nudge, hard-capped at +/-10 VOR points -- roughly one tier, enough to break a tie or
+# jump a near neighbour, not enough to overrule the projection. Do not raise this cap
+# and do not expose it as a UI slider (explicit instruction): an unbounded intel column
+# would let a hunch quietly rebuild the board, defeating the point of having a
+# projection system at all. `hard_avoid` is a filter, not a nudge -- it has no points
+# value because it never reaches the arithmetic.
+# ---------------------------------------------------------------------------
+INTEL_NUDGE_CAP = 10.0
+INTEL_TAG_SIGN = {"target": 1.0, "fade": -1.0}
+INTEL_FILTER_TAGS = {"hard_avoid"}
 
 # ---------------------------------------------------------------------------
 # Roster target (spec Section 8 / R22). No K here: the props/factor-grid pipeline

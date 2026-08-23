@@ -1,0 +1,45 @@
+{
+  "picks": [
+    {
+      "overall": 1,
+      "round": 1,
+      "player": "Bijan Robinson",
+      "position": "RB",
+      "nfl_team": "ATL",
+      "manager": "Dylan"
+    },
+    {
+      "overall": 2,
+      "round": 1,
+      "player": "Jahmyr Gibbs",
+      "position": "RB",
+      "nfl_team": "DET",
+      "manager": "Cailen"
+    },
+    {
+      "overall": 3,
+      "round": 1,
+      "player": "Ja'Marr Chase",
+      "position": "WR",
+      "nfl_team": "CIN",
+      "manager": "Tyler"
+    },
+    {
+      "overall": 4,
+      "round": 1,
+      "player": "Jaxon Smith-Njigba",
+      "position": "WR",
+      "nfl_team": "SEA",
+      "manager": "Nick"
+    },
+    {
+      "overall": 5,
+      "round": 1,
+      "player": "Puka Nacua",
+      "position": "WR",
+      "nfl_team": "LAR",
+      "manager": "Nathan"
+    }
+  ],
+  "sleeper_draft_id": ""
+}

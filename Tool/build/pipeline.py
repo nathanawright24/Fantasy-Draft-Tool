@@ -10,16 +10,19 @@ nothing here is stateful across runs. Exits nonzero if a hard-failure assertion
 trips (an unmapped team/position code), so a bad build is visible immediately.
 
 Stages, in order:
-  1. load_props            -- {pos}_implied_props.csv x4, standardize columns, map team
-  2. compute_bonus_model     -- lognormal per-game bonus estimate (spec Section 6.2)
-  3. load_priors              -- {pos}_player_priors.csv x4, backfill nfl_team from props
-  4. load_oline                 -- oline_blend_rankings.csv, map team, assert zero unmapped
-  5. ingest_adp                   -- NFFC + Sleeper -> canonical schema (spec Section 4.4)
-  6. load_college_bias               -- recall-based player -> college table (spec R13)
-  7. compute_manager_priors            -- from historical picks, not hand-transcribed
-  8. compute_team_bias                   -- ditto
-  9. build_player_master                   -- final join -> player_master.csv
-  10. validate_and_report                    -- join_report.txt, pass/fail summary
+  1. load_props                -- {pos}_implied_props.csv x4, standardize columns, map team
+  2. compute_bonus_model         -- lognormal per-game bonus estimate (spec Section 6.2)
+  3. load_priors                  -- {pos}_player_priors.csv x4, backfill nfl_team from props
+  4. load_oline                     -- oline_blend_rankings.csv, map team, assert zero unmapped
+  5. ingest_adp                       -- NFFC + Sleeper -> canonical schema (spec Section 4.4)
+  6. load_college_bias                  -- recall-based player -> college table (spec R13)
+  7. parse_player_intel                   -- PLAYER-INTEL-2026.md -> structured table (work order item 3)
+  8. compute_manager_priors                 -- from historical picks, not hand-transcribed
+  9. compute_team_bias                        -- ditto
+  10. build_player_master                       -- final join -> player_master.csv
+  11. compute_adp_source_offsets                  -- Sleeper vs NFFC divergence by position (work order item 1)
+  12. validate_top_adp_coverage                     -- top-150-by-either-source join is a hard failure (work order item 2)
+  13. validate_and_report                             -- join_report.txt, pass/fail summary
 """
 from __future__ import annotations
 
@@ -153,16 +156,39 @@ def print_bonus_calibration(props_all: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 # Stage 3: factor-grid priors, team backfill (spec Section 5 rule #2)
 # ---------------------------------------------------------------------------
-# Known nickname-vs-full-name mismatches between the factor-grid priors (which use
-# whatever the analyst's screenshot printed) and the props files (which use Clay's
-# full-name convention). Verified against both source rows before adding -- both sides
-# of each mapping were confirmed to be the same real person, same team, same position.
-# Not a guess: a bounded, documented build-layer correction (spec/CLAUDE.md's own
-# stated escape hatch for exactly this situation).
+# Known nickname-vs-full-name mismatches between other sources and the props files
+# (which set the canonical name_key everything else joins onto). Every entry maps the
+# OTHER source's normalized spelling -> props' spelling. Verified against both source
+# rows before adding -- both sides of each mapping were confirmed to be the same real
+# person, same team, same position. Not a guess: a bounded, documented build-layer
+# correction (spec/CLAUDE.md's own stated escape hatch for exactly this situation).
+#
+# "chig okonkwo"/"cam ward": factor-grid priors use a nickname, props use the full name.
+# "kenneth walker" / "cameron skattebo" / "kenny gainwell": ADP-side nickname
+# mismatches against props' spelling, found via work order 2026-08-16 item 2's
+# reclassified severity (any top-150-by-either-source player with no market join is
+# now a hard failure, not a note -- this audit is what surfaced all three). Each is a
+# single source disagreeing with props + the OTHER source: Sleeper writes "Kenneth
+# Walker III" and "Cameron Skattebo" where NFFC agrees with props' "Ken Walker III" /
+# "Cam Skattebo"; NFFC writes "Gainwell, Kenny" where props and Sleeper agree on
+# "Kenneth Gainwell". Applied in `ingest_nffc_adp` / `ingest_sleeper_adp` (not just
+# `load_priors`, where the first two entries below are used), since these are
+# ADP-side mismatches, not priors-side ones.
 NAME_ALIASES = {
     "chig okonkwo": "chigoziem okonkwo",
     "cam ward": "cameron ward",
+    "kenneth walker": "ken walker",
+    "cameron skattebo": "cam skattebo",
+    "kenny gainwell": "kenneth gainwell",
 }
+
+
+def _apply_name_alias(name_key: str, report: JoinReport, context: str) -> str:
+    alias = NAME_ALIASES.get(name_key)
+    if alias is None:
+        return name_key
+    report.note(f"{context}: rekeyed '{name_key}' to '{alias}' via NAME_ALIASES")
+    return alias
 
 
 def load_priors(position: str, props_df: pd.DataFrame, report: JoinReport) -> pd.DataFrame:
@@ -242,6 +268,7 @@ def ingest_nffc_adp(report: JoinReport) -> pd.DataFrame:
         team = config.canonical_team(r[nfl_team_col], "nffc")
         if team is None:
             report.fail(f"nffc_adp: unmapped team '{r[nfl_team_col]}' for player '{r['Player']}'")
+        name_key = _apply_name_alias(config.normalize_name(f"{first} {last}"), report, "nffc_adp")
         rows.append(
             {
                 "player_display": r["Player"],
@@ -250,7 +277,7 @@ def ingest_nffc_adp(report: JoinReport) -> pd.DataFrame:
                 "suffix": suffix,
                 "position": pos,
                 "nfl_team": team,
-                "name_key": config.normalize_name(f"{first} {last}"),
+                "name_key": name_key,
                 "source": "NFFC",
                 "adp_value": r["ADP"],
                 "adp_min": r["Min Pick"],
@@ -282,6 +309,7 @@ def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
         team = config.canonical_team(r["Team"], "sleeper")
         if team is None:
             report.fail(f"sleeper_adp: unmapped team '{r['Team']}' for player '{r['Player']}'")
+        name_key = _apply_name_alias(config.normalize_name(f"{first} {last}"), report, "sleeper_adp")
         rows.append(
             {
                 "player_display": r["Player"],
@@ -290,7 +318,7 @@ def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
                 "suffix": suffix,
                 "position": pos,
                 "nfl_team": team,
-                "name_key": config.normalize_name(f"{first} {last}"),
+                "name_key": name_key,
                 "source": "Sleeper",
                 "adp_value": r["ADP"],
                 "adp_rank": r["ADP"],
@@ -380,6 +408,78 @@ def load_college_bias(report: JoinReport) -> pd.DataFrame:
         f"real coverage gap, not a bug."
     )
     return df
+
+
+# ---------------------------------------------------------------------------
+# Stage 6.5: player intel (work order 2026-08-16 item 3)
+# ---------------------------------------------------------------------------
+INTEL_REQUIRED_COLUMNS = {"player", "position", "pick_window", "tag"}
+
+
+def parse_player_intel(report: JoinReport) -> pd.DataFrame:
+    """Parses the "Intel table" markdown table out of `2026/PLAYER-INTEL-2026.md` into
+    a small structured frame, joined onto player_master later on name_key + position --
+    same normalization + NAME_ALIASES path as every other source, reused rather than
+    reimplemented.
+
+    Only the ONE markdown table whose header contains all of INTEL_REQUIRED_COLUMNS is
+    parsed; the file's other tables (tag legend, the "flagged for owner review"
+    divergence tables) share the same `| ... |` shape but not that header, so they're
+    skipped automatically rather than needing a hand-picked line range that would go
+    stale the moment the doc is edited. `priority` and `note` are optional per the
+    file's own "template for future years" footer.
+    """
+    empty = pd.DataFrame(columns=["name_key", "position", "player", "pick_window", "priority", "tag", "note"])
+    path = config.PLAYER_INTEL_MD_PATH
+    if not path.exists():
+        report.note(f"player_intel: {path} not found -- layer produces no rows this build")
+        return empty
+
+    header: list[str] | None = None
+    records: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            header = None
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if all(c.replace("-", "") == "" for c in cells):
+            continue  # markdown header-separator row (---|---|---)
+        if header is None:
+            if INTEL_REQUIRED_COLUMNS <= set(cells):
+                header = cells
+            continue
+        records.append(dict(zip(header, cells)))
+
+    if not records:
+        report.fail(
+            f"player_intel: no table in {path} has a header containing "
+            f"{sorted(INTEL_REQUIRED_COLUMNS)} -- expected the 'Intel table' section"
+        )
+        return empty
+
+    df = pd.DataFrame(records)
+    missing_cols = INTEL_REQUIRED_COLUMNS - set(df.columns)
+    if missing_cols:
+        report.fail(f"player_intel: table is missing required column(s) {sorted(missing_cols)}")
+        return empty
+
+    df["name_key"] = df["player"].apply(config.normalize_name)
+    df["name_key"] = df["name_key"].apply(lambda k: _apply_name_alias(k, report, "player_intel"))
+    df["pick_window"] = pd.to_numeric(df["pick_window"], errors="coerce")
+    df["priority"] = pd.to_numeric(df["priority"], errors="coerce") if "priority" in df.columns else np.nan
+    if "note" not in df.columns:
+        df["note"] = ""
+
+    allowed_tags = set(config.INTEL_TAG_SIGN) | config.INTEL_FILTER_TAGS
+    for bad_tag in sorted(set(df["tag"]) - allowed_tags):
+        report.fail(f"player_intel: unrecognized tag '{bad_tag}' -- expected one of {sorted(allowed_tags)}")
+
+    keep = df[["name_key", "position", "player", "pick_window", "priority", "tag", "note"]]
+    config.DATA_DERIVED.mkdir(parents=True, exist_ok=True)
+    keep.to_csv(config.PLAYER_INTEL_PATH, index=False)
+    report.note(f"player_intel: {len(keep)} rows parsed from {path.name} ({keep['tag'].value_counts().to_dict()})")
+    return keep
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +614,7 @@ CORE_COLUMN_ORDER = [
     "comparison_source", "comparison_adp_value", "comparison_adp_rank", "comparison_adp_min",
     "comparison_adp_max", "comparison_adp_n", "comparison_adp_usable", "comparison_as_of",
     "adp_rank_divergence", "team_conflict", "data_quality_note", "join_coverage",
+    "intel_windows", "intel_priority", "intel_tag", "intel_note",
 ]
 
 
@@ -536,6 +637,37 @@ def _prep_adp_side(adp_df: pd.DataFrame, label: str) -> pd.DataFrame:
     return keep
 
 
+def _dedupe_intel_for_master(intel_df: pd.DataFrame, report: JoinReport) -> pd.DataFrame:
+    """`player_intel.csv` is one row per (player, pick_window) -- a player can be a
+    target across several windows (A.J. Brown: pick 20 AND pick 29 in the 2026 table).
+    `player_master` is one row per PLAYER, so this collapses to a single
+    tag/priority/note before the merge. Merging the un-deduped table directly would
+    silently multiply that player's player_master row for every extra window -- a
+    one-to-many join, the same class of bug as an unmatched name (spec/CLAUDE.md rule
+    #3), just inflating row count instead of losing rows.
+
+    `intel_windows` keeps the full set of tagged pick numbers as a display string so
+    that information isn't lost, just moved out of the row-count-sensitive columns.
+    """
+    rows = []
+    for (name_key, position), g in intel_df.groupby(["name_key", "position"]):
+        tags = set(g["tag"])
+        if len(tags) > 1:
+            report.note(
+                f"player_intel: '{g['player'].iloc[0]}' ({position}) has conflicting tags "
+                f"across pick windows: {sorted(tags)} -- using the highest-priority row"
+            )
+        chosen = g.sort_values("priority", na_position="last").iloc[0]
+        windows = ", ".join(str(int(w)) for w in sorted(g["pick_window"].dropna().unique()))
+        rows.append(
+            {
+                "name_key": name_key, "position": position, "intel_tag": chosen["tag"],
+                "intel_priority": chosen["priority"], "intel_windows": windows, "intel_note": chosen["note"],
+            }
+        )
+    return pd.DataFrame(rows, columns=["name_key", "position", "intel_tag", "intel_priority", "intel_windows", "intel_note"])
+
+
 def build_player_master(
     props_all: pd.DataFrame,
     priors_all: pd.DataFrame,
@@ -543,6 +675,7 @@ def build_player_master(
     ref_df: pd.DataFrame,
     cmp_df: pd.DataFrame,
     college_df: pd.DataFrame,
+    intel_df: pd.DataFrame,
     report: JoinReport,
 ) -> pd.DataFrame:
     priors_slim = priors_all.drop(columns=["nfl_team"])  # already backfilled FROM props; avoid dup
@@ -595,6 +728,14 @@ def build_player_master(
     )
     merged = merged.merge(college_slim, on=["name_key", "position"], how="left")
 
+    if len(intel_df):
+        intel_slim = _dedupe_intel_for_master(intel_df, report)
+        merged = merged.merge(intel_slim, on=["name_key", "position"], how="left")
+        unmatched = set(zip(intel_df["name_key"], intel_df["position"])) - set(zip(merged["name_key"], merged["position"]))
+        for name_key, position in unmatched:
+            display = intel_df.loc[(intel_df["name_key"] == name_key) & (intel_df["position"] == position), "player"].iloc[0]
+            report.note(f"player_intel: '{display}' ({position}) has no matching player_master row -- intel row will not join")
+
     merged["data_quality_note"] = ""
     merged.loc[merged["team_conflict"], "data_quality_note"] += (
         "reference/comparison ADP disagree on NFL team; "
@@ -612,6 +753,90 @@ def build_player_master(
     config.DATA_DERIVED.mkdir(parents=True, exist_ok=True)
     merged.to_csv(config.PLAYER_MASTER_PATH, index=False)
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Stage 10: ADP source offsets + top-150 join-coverage validation
+# (work order 2026-08-16 items 1 and 2)
+# ---------------------------------------------------------------------------
+def compute_adp_source_offsets(master: pd.DataFrame, report: JoinReport, top_n: int = 150) -> pd.DataFrame:
+    """Measures how far Sleeper (reference) and NFFC (comparison) actually diverge,
+    per position, among the players who matter -- computed at build time from real
+    data, not hard-coded, so next season's numbers are next season's rather than a
+    constant that silently goes stale the moment either site's population shifts.
+
+    mean(reference_adp_rank - comparison_adp_value) among players ranked <= top_n by
+    Sleeper and present in both sources. Positive means Sleeper ranks that position
+    LATER than NFFC's mean pick (a model centered on NFFC would overestimate how early
+    that position leaves); negative means Sleeper ranks it EARLIER.
+    """
+    top = master[
+        master["reference_adp_rank"].notna()
+        & (master["reference_adp_rank"] <= top_n)
+        & master["comparison_adp_value"].notna()
+    ]
+    rows = [
+        {
+            "position": pos,
+            "mean_offset_reference_minus_comparison": round(float((g["reference_adp_rank"] - g["comparison_adp_value"]).mean()), 1),
+            "n": len(g),
+        }
+        for pos, g in top.groupby("position")
+    ]
+    offsets = pd.DataFrame(rows).sort_values("position").reset_index(drop=True)
+    config.DATA_DERIVED.mkdir(parents=True, exist_ok=True)
+    offsets.to_csv(config.ADP_SOURCE_OFFSETS_PATH, index=False)
+    report.note(
+        "adp_source_offsets (top "
+        f"{top_n} by Sleeper rank): "
+        + "; ".join(
+            f"{r.position} {r.mean_offset_reference_minus_comparison:+.1f} (n={r.n})" for r in offsets.itertuples()
+        )
+        + " -- positive means Sleeper ranks that position later than NFFC's mean pick"
+    )
+    return offsets
+
+
+def validate_top_adp_coverage(
+    master: pd.DataFrame, ref_df: pd.DataFrame, cmp_df: pd.DataFrame, report: JoinReport, top_n: int = 150
+) -> None:
+    """Any player inside the top `top_n` of EITHER ADP source that fails to join into
+    player_master is a HARD FAILURE, not a note. join_report previously reported "0
+    hard failures" while a top-20 player (Ken Walker III / Kenneth Walker III) had no
+    market data from either source at all -- the report itself was miscalibrated,
+    which is worse than the underlying join bug (spec/CLAUDE.md rule #3: silent join
+    failure is the primary correctness risk in this project; a report that says
+    everything's fine while hiding one is the same failure one level up).
+
+    Restricted to `config.POSITIONS` (QB/RB/WR/TE): K is out of scope for
+    player_master by design (R22 -- no props/factor-grid data exists for kickers), so
+    a real, well-ranked Sleeper kicker (e.g. Brandon Aubrey) correctly has no
+    player_master row and must not be flagged as a join failure.
+    """
+    master_lookup = master.set_index(["name_key", "position"])
+    for label, adp_df, value_col in (
+        ("reference", ref_df, "reference_adp_rank"),
+        ("comparison", cmp_df, "comparison_adp_value"),
+    ):
+        top = adp_df[(adp_df["adp_rank"] <= top_n) & adp_df["position"].isin(config.POSITIONS)]
+        for _, row in top.iterrows():
+            key = (row["name_key"], row["position"])
+            if key not in master_lookup.index:
+                report.fail(
+                    f"{label}_adp: top-{top_n} player '{row['player_display']}' (rank "
+                    f"{row['adp_rank']:.0f}) has no player_master row at all -- join failed"
+                )
+                continue
+            mrow = master_lookup.loc[key]
+            if isinstance(mrow, pd.DataFrame):  # duplicate key -- check all instances
+                found = mrow[value_col].notna().any()
+            else:
+                found = pd.notna(mrow[value_col])
+            if not found:
+                report.fail(
+                    f"{label}_adp: top-{top_n} player '{row['player_display']}' (rank "
+                    f"{row['adp_rank']:.0f}) joined to player_master but {value_col} is null"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -644,12 +869,19 @@ def main() -> int:
     print("Loading college-bias recall table...")
     college_df = load_college_bias(report)
 
+    print("Parsing player intel...")
+    intel_df = parse_player_intel(report)
+
     print("Computing manager priors and team bias from historical picks...")
     compute_manager_priors(report)
     compute_team_bias(report)
 
     print("Building player_master.csv...")
-    master = build_player_master(props_all, priors_all, oline_df, ref_df, cmp_df, college_df, report)
+    master = build_player_master(props_all, priors_all, oline_df, ref_df, cmp_df, college_df, intel_df, report)
+
+    print("Computing ADP source offsets and validating top-150 join coverage...")
+    compute_adp_source_offsets(master, report)
+    validate_top_adp_coverage(master, ref_df, cmp_df, report)
 
     report.write(config.JOIN_REPORT_PATH)
 
