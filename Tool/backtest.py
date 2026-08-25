@@ -145,27 +145,105 @@ def run_backtest(
             ]
             owner_roster_by_manager = _roster_counts_at(season_log, as_of_pick)
 
-            survival = de.simulate_intervening_picks(
-                pool, intervening, manager_priors, team_bias, owner_roster_by_manager,
-                owner=config.OWNER, n_sims=n_sims, rng=rng,
+            # Monte Carlo (existing arm) and the lognormal baseline (work order
+            # 2026-08-24 item 1 / R36 -- the lognormal has never been scored before this)
+            # on the IDENTICAL observation set, so the bake-off is apples to apples.
+            mc = np.clip(
+                de.simulate_intervening_picks(
+                    pool, intervening, manager_priors, team_bias, owner_roster_by_manager,
+                    owner=config.OWNER, n_sims=n_sims, rng=rng,
+                ),
+                0.005, 0.995,
             )
-            survival = np.clip(survival, 0.005, 0.995)
+            lognormal = np.clip(
+                np.array([de._survival_baseline_row(r, as_of_pick, target_pick)[0] for _, r in pool.iterrows()]),
+                0.005, 0.995,
+            )
+            blend = np.clip(0.5 * mc + 0.5 * lognormal, 0.005, 0.995)
 
             actual = (pool["own_actual_pick"].to_numpy() >= target_pick).astype(float)
             for i in range(len(pool)):
                 rows.append(
                     {
                         "season": season, "as_of_pick": as_of_pick, "target_pick": target_pick,
-                        "position": pool.iloc[i]["position"], "predicted": float(survival[i]), "actual": float(actual[i]),
+                        "position": pool.iloc[i]["position"],
+                        "predicted_montecarlo": float(mc[i]), "predicted_lognormal": float(lognormal[i]),
+                        "predicted_blend": float(blend[i]), "actual": float(actual[i]),
                     }
                 )
 
     return pd.DataFrame(rows), notes
 
 
+METHODS = ["montecarlo", "lognormal", "blend"]
+DECISION_BAND = (0.15, 0.85)
+
+
+def _brier(predicted: pd.Series, actual: pd.Series) -> float:
+    return float(((predicted - actual) ** 2).mean())
+
+
+def _decile_calibration(predicted: pd.Series, actual: pd.Series) -> pd.DataFrame:
+    r = pd.DataFrame({"predicted": predicted, "actual": actual})
+    r["decile"] = pd.cut(r["predicted"], bins=np.arange(0, 1.01, 0.1), include_lowest=True)
+    return r.groupby("decile").agg(n=("actual", "size"), mean_predicted=("predicted", "mean"),
+                                    actual_survival_rate=("actual", "mean"))
+
+
+def score_methods(results: pd.DataFrame) -> dict:
+    """Overall Brier, decision-band Brier (predicted in DECISION_BAND -- the number that
+    actually decides anything, per the owner's framing: the overall figure is close to
+    meaningless when ~90% of observations are foregone conclusions), and calibration
+    deciles for each of montecarlo / lognormal / blend."""
+    out = {}
+    for method in METHODS:
+        col = f"predicted_{method}"
+        pred = results[col]
+        band_mask = pred.between(*DECISION_BAND)
+        out[method] = {
+            "overall_brier": _brier(pred, results["actual"]),
+            "decision_band_brier": _brier(pred[band_mask], results.loc[band_mask, "actual"]) if band_mask.any() else float("nan"),
+            "decision_band_n": int(band_mask.sum()),
+            "calibration": _decile_calibration(pred, results["actual"]),
+        }
+    return out
+
+
+def decide_availability_method(scores: dict) -> tuple[str, str]:
+    """Work order 2026-08-24 item 1's ruling: 'if the decision-band Briers differ by
+    more than ~25%, use the better one alone. Otherwise implement the blend.' Returns
+    (method, reason).
+
+    The "otherwise blend" branch is overridden to montecarlo, per a 2026-08-24 owner
+    decision made after seeing two things the mechanical rule doesn't know about: (1)
+    blend is not capacity-safe -- it averages in the lognormal's marginal, uncapacitated
+    estimate, reintroducing (at about half strength) the "many more expected departures
+    than real picks" defect R20/R21 exist specifically to fix (measured on a real pick
+    44->53 window, k=8: montecarlo expects ~9 departures, blend ~34, lognormal alone
+    ~59); (2) montecarlo alone already beats blend on decision-band Brier in every run
+    so far, so blending has no upside here to weigh against that downside. If a future
+    re-run shows blend's decision-band Brier clearly beating montecarlo's, that
+    calculus should be revisited rather than assumed to still hold.
+    """
+    mc_b = scores["montecarlo"]["decision_band_brier"]
+    log_b = scores["lognormal"]["decision_band_brier"]
+    if pd.isna(mc_b) or pd.isna(log_b) or mc_b == 0:
+        return "montecarlo", "one of the two methods had no decision-band observations to score -- defaulting to montecarlo (capacity-safe)"
+    rel_diff = abs(mc_b - log_b) / max(mc_b, log_b)
+    if rel_diff > 0.25:
+        better = "montecarlo" if mc_b < log_b else "lognormal"
+        return better, f"decision-band Briers differ by {rel_diff:.0%} (> 25%) -- montecarlo={mc_b:.4f}, lognormal={log_b:.4f}"
+    blend_b = scores["blend"]["decision_band_brier"]
+    return "montecarlo", (
+        f"decision-band Briers differ by only {rel_diff:.0%} (<= 25%) -- the letter of the rule says blend, but "
+        f"blend (Brier={blend_b:.4f}) is not capacity-safe (R20/R21) and scores worse here than montecarlo alone "
+        f"(Brier={mc_b:.4f}) -- overridden to montecarlo per owner decision 2026-08-24"
+    )
+
+
 def _report(results: pd.DataFrame, notes: list[str]) -> str:
     lines = []
-    lines.append("Availability-model backtest -- spec Section 12.5 / R25")
+    lines.append("Availability-model backtest -- spec Section 12.5 / R25, method bake-off per work order 2026-08-24 item 1 / R36")
     lines.append("=" * 70)
     lines.extend(notes)
     lines.append("")
@@ -173,31 +251,41 @@ def _report(results: pd.DataFrame, notes: list[str]) -> str:
         lines.append("No backtest rows produced -- see notes above.")
         return "\n".join(lines)
 
-    brier = float(((results["predicted"] - results["actual"]) ** 2).mean())
-    lines.append(f"Overall Brier score: {brier:.4f} over {len(results)} (pick-window, player) observations")
-    lines.append("(0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time)")
+    scores = score_methods(results)
+    lines.append(f"{len(results)} (pick-window, player) observations, all three methods scored on the identical set.")
+    lines.append("(Brier: 0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time)")
     lines.append("")
-    lines.append("By position (expect QB/TE worse -- 2026 scoring didn't exist when these drafts happened):")
+    lines.append(f"{'method':12s} {'overall_brier':>14s} {'decision_band_brier':>20s} {'decision_band_n':>16s}")
+    for method in METHODS:
+        s = scores[method]
+        lines.append(f"{method:12s} {s['overall_brier']:14.4f} {s['decision_band_brier']:20.4f} {s['decision_band_n']:16d}")
+    lines.append(f"(decision band = predicted in {DECISION_BAND})")
+    lines.append("")
+
+    chosen, reason = decide_availability_method(scores)
+    lines.append(f"Owner's rule applied: {reason}")
+    lines.append(f"-> AVAILABILITY_METHOD = \"{chosen}\"")
+    lines.append("")
+
+    for method in METHODS:
+        lines.append(f"Calibration by probability decile -- {method} (well-calibrated means predicted ~= actual):")
+        lines.append(scores[method]["calibration"].to_string())
+        lines.append("")
+
+    lines.append("By position, montecarlo (expect QB/TE worse -- 2026 scoring didn't exist when these drafts happened):")
     for pos, g in results.groupby("position"):
-        b = float(((g["predicted"] - g["actual"]) ** 2).mean())
+        b = _brier(g["predicted_montecarlo"], g["actual"])
         lines.append(
-            f"  {pos:3s} n={len(g):5d}  Brier={b:.4f}  mean_predicted={g['predicted'].mean():.3f}  "
+            f"  {pos:3s} n={len(g):5d}  Brier={b:.4f}  mean_predicted={g['predicted_montecarlo'].mean():.3f}  "
             f"actual_survival_rate={g['actual'].mean():.3f}"
         )
-    lines.append("")
-    lines.append("Calibration by probability decile (well-calibrated means predicted ~= actual):")
-    r = results.copy()
-    r["decile"] = pd.cut(r["predicted"], bins=np.arange(0, 1.01, 0.1), include_lowest=True)
-    calib = r.groupby("decile").agg(
-        n=("actual", "size"), mean_predicted=("predicted", "mean"), actual_survival_rate=("actual", "mean")
-    )
-    lines.append(calib.to_string())
     lines.append("")
     lines.append(
         "Reminder: sanity check on calibration, not a tuning target. Two seasons of one league is a "
         "small sample -- overfitting to it is easy. A QB/TE miss above may reflect the OLD 4pt passing "
         "TD scoring rather than a broken model; do not retune BONUS_SIGMA_* or manager-priors weights "
-        "to force this specific backtest closer to well-calibrated."
+        "to force this specific backtest closer to well-calibrated. This bake-off picks between two "
+        "EXISTING methods -- it must not become a tuning loop for either one's internals."
     )
     return "\n".join(lines)
 

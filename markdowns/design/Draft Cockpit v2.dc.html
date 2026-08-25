@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-e49be38b-eccc-48de-a05a-a4b3b5c790d6/styles.css">
+<script src="_ds/nocturne-e49be38b-eccc-48de-a05a-a4b3b5c790d6/_ds_bundle.js"></script>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/@phosphor-icons/web@2.1.1"></script>
+<script src="board_data.js"></script>
+<style>
+  :root{
+    --c-bg:var(--color-bg); --c-surface:var(--color-surface); --c-surface-2:#1c1e2b; --c-text:var(--color-text);
+    --c-muted:var(--color-neutral-500); --c-faint:var(--color-neutral-600); --c-line:var(--color-divider);
+    --c-line-soft:color-mix(in srgb, var(--color-text) 8%, transparent);
+    --c-accent:var(--color-accent); --c-accent-deep:var(--color-accent-800);
+    --c-accent-soft:color-mix(in srgb, var(--color-accent) 14%, transparent);
+    --c-grid:color-mix(in srgb, var(--color-text) 3%, transparent);
+    --c-good:oklch(0.734 0.125 155); --c-warn:oklch(0.760 0.140 78); --c-bad:oklch(0.660 0.150 25);
+    --c-qb:#fc2b6d; --c-rb:#73c3a6; --c-wr:#46a2ca; --c-te:#cc8c4a;
+  }
+  [data-t="light"]{
+    --c-bg:var(--color-neutral-200); --c-surface:var(--color-neutral-100); --c-surface-2:#eceff9;
+    --c-text:var(--color-neutral-900); --c-muted:var(--color-neutral-700); --c-faint:var(--color-neutral-600);
+    --c-line:color-mix(in srgb, var(--color-neutral-900) 16%, transparent);
+    --c-line-soft:color-mix(in srgb, var(--color-neutral-900) 8%, transparent);
+    --c-accent:var(--color-accent-700); --c-accent-deep:var(--color-accent-300);
+    --c-accent-soft:color-mix(in srgb, var(--color-accent-700) 10%, transparent);
+    --c-grid:color-mix(in srgb, var(--color-neutral-900) 4%, transparent);
+    --c-good:oklch(0.500 0.120 155); --c-warn:oklch(0.560 0.130 70); --c-bad:oklch(0.520 0.160 25);
+    --c-qb:color-mix(in srgb, #fc2b6d 78%, #292b31);
+    --c-rb:color-mix(in srgb, #73c3a6 62%, #292b31);
+    --c-wr:color-mix(in srgb, #46a2ca 74%, #292b31);
+    --c-te:color-mix(in srgb, #cc8c4a 74%, #292b31);
+  }
+  @keyframes livePulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+  body{margin:0;background:var(--color-bg);font-family:var(--font-body)}
+  a{color:var(--color-accent);text-decoration:none}
+  a:hover{color:var(--color-text);text-decoration:underline}
+</style>
+</helmet>
+
+<div data-t="{{ theme }}" style="width:1920px;height:1080px;overflow:hidden;background:radial-gradient(1200px 760px at 86% -16%,var(--c-accent-soft),transparent 66%),repeating-linear-gradient(60deg,var(--c-grid) 0 1px,transparent 1px 38px),repeating-linear-gradient(-60deg,var(--c-grid) 0 1px,transparent 1px 38px),var(--c-bg);color:var(--c-text);font-family:var(--font-body);font-size:14px;padding:18px 24px;box-sizing:border-box;display:flex;flex-direction:column;gap:var(--space-3)">
+
+  <!-- ─────────── app chrome ─────────── -->
+  <div style="display:flex;align-items:center;gap:var(--space-6);flex:0 0 auto">
+    <div style="display:flex;align-items:baseline;gap:var(--space-3)">
+      <span style="font-family:var(--font-heading);font-size:16px;font-weight:500;letter-spacing:0.01em">2026 Draft Room</span>
+      <span style="font-size:12px;color:var(--c-faint)">slot 5 of 12, full point per reception</span>
+    </div>
+    <div style="display:flex;gap:var(--space-1);padding:var(--space-1);border:1px solid var(--c-line);border-radius:var(--radius-md)">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="2">
+        <button onClick="{{ t.onClick }}" style="height:30px;padding:0 var(--space-6);border:1px solid {{ t.border }};border-radius:var(--radius-sm);background:{{ t.bg }};color:{{ t.color }};font-family:var(--font-body);font-size:13px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:var(--space-2)" style-hover="border-color:var(--c-accent)"><i class="{{ t.icon }}" style="font-size:15px"></i>{{ t.label }}</button>
+      </sc-for>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;align-items:center;gap:var(--space-2);font-size:12px;color:var(--c-muted)">
+      <span style="width:7px;height:7px;border-radius:50%;background:var(--c-good);animation:livePulse 1.8s ease-in-out infinite"></span>
+      Watching Sleeper. Recomputing on every pick. Last pick read {{ lastPickAgo }}.
+    </div>
+    <div style="display:flex;gap:var(--space-1);padding:var(--space-1);border:1px solid var(--c-line);border-radius:var(--radius-md)">
+      <sc-for list="{{ stateTabs }}" as="s" hint-placeholder-count="2">
+        <button onClick="{{ s.onClick }}" style="height:30px;padding:0 var(--space-4);border:1px solid {{ s.border }};border-radius:var(--radius-sm);background:{{ s.bg }};color:{{ s.color }};font-family:var(--font-body);font-size:12px;font-weight:500;cursor:pointer" style-hover="border-color:var(--c-accent)">{{ s.label }}</button>
+      </sc-for>
+    </div>
+    <button style="height:34px;padding:0 var(--space-6);border-radius:var(--radius-md);background:transparent;border:1px solid var(--c-accent);color:var(--c-accent);font-family:var(--font-body);font-size:13px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:var(--space-2)" style-hover="background:var(--c-accent-soft)" style-active="border-color:var(--c-text);color:var(--c-text)"><i class="ph ph-arrows-clockwise" style="font-size:16px"></i>Sync now</button>
+  </div>
+
+  <!-- ═══════════ COCKPIT ═══════════ -->
+  <sc-if value="{{ isCockpit }}" hint-placeholder-val="{{ true }}">
+    <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:var(--space-3)">
+
+      <div style="display:flex;align-items:stretch;gap:1px;background:var(--c-line-soft);border:1px solid var(--c-line);border-radius:var(--radius-md);overflow:hidden;flex:0 0 auto">
+        <div style="background:var(--c-surface);padding:10px 18px;display:flex;flex-direction:column;gap:1px;min-width:236px">
+          <div style="font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--c-faint)">{{ clockLabel }}</div>
+          <div style="display:flex;align-items:baseline;gap:var(--space-2)"><span style="font-family:var(--font-heading);font-size:24px;font-weight:500;line-height:1.05;color:{{ clockColor }}">Pick {{ onClockPick }}</span><span style="font-size:13px;color:var(--c-muted)">{{ clockSub }}</span></div>
+        </div>
+        <div style="background:var(--c-surface);padding:10px 18px;display:flex;flex-direction:column;gap:1px;min-width:266px">
+          <div style="font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--c-faint)">{{ nextLabel }}</div>
+          <div style="display:flex;align-items:baseline;gap:var(--space-2)"><span style="font-family:var(--font-heading);font-size:24px;font-weight:500;line-height:1.05;color:var(--c-accent)">{{ nextPick }}</span><span style="font-size:13px;color:var(--c-muted)">{{ nextSub }}</span></div>
+        </div>
+        <div style="background:var(--c-surface);padding:10px 18px;display:flex;flex-direction:column;gap:3px;flex:1;min-width:0">
+          <div style="font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--c-faint)">{{ windowLabel }}</div>
+          <div style="display:flex;gap:var(--space-2);flex-wrap:wrap">
+            <sc-for list="{{ interveningChips }}" as="m" hint-placeholder-count="8">
+              <span style="display:inline-flex;align-items:center;gap:var(--space-2);height:21px;padding:0 var(--space-3);border-radius:var(--radius-sm);background:var(--c-surface-2);border:1px solid var(--c-line-soft);font-size:12px;color:var(--c-muted)">{{ m.name }}<span style="color:{{ m.color }};font-size:11px">{{ m.tell }}</span></span>
+            </sc-for>
+          </div>
+        </div>
+        <div style="background:var(--c-surface);padding:10px 18px;display:flex;align-items:center;gap:var(--space-3)">
+          <sc-for list="{{ warnChips }}" as="w" hint-placeholder-count="2">
+            <span style="display:inline-flex;align-items:center;gap:var(--space-2);height:26px;padding:0 10px;border-radius:var(--radius-sm);background:{{ w.bg }};border:1px solid {{ w.border }};color:{{ w.color }};font-size:12px;font-weight:600;white-space:nowrap"><i class="{{ w.icon }}" style="font-size:14px"></i>{{ w.label }}</span>
+          </sc-for>
+        </div>
+      </div>
+
+      <!-- routes -->
+      <div style="flex:0 0 auto">
+        <div style="display:flex;align-items:baseline;gap:var(--space-4);margin:0 0 var(--space-2)">
+          <h2 style="margin:0;font-family:var(--font-heading);font-size:16px;font-weight:500">{{ routesTitle }}</h2>
+          <span style="font-size:12px;color:var(--c-muted)">{{ routesBlurb }}</span>
+          <div style="flex:1"></div>
+          <span style="font-size:11px;color:var(--c-faint);letter-spacing:0.06em;text-transform:uppercase">Three picks deep</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-3)">
+          <sc-for list="{{ routes }}" as="r" hint-placeholder-count="3">
+            <div style="background:var(--c-surface);border:1px solid var(--c-line);border-top:2px solid {{ r.accent }};border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);display:flex;flex-direction:column;gap:var(--space-2)">
+              <div style="display:flex;align-items:baseline;justify-content:space-between">
+                <div style="display:flex;align-items:baseline;gap:var(--space-2)">
+                  <span style="font-size:11px;font-weight:600;letter-spacing:0.1em;color:{{ r.accent }}">{{ r.tag }}</span>
+                  <span style="font-size:14px;font-weight:500">{{ r.plan }}</span>
+                </div>
+                <span style="font-size:11px;color:var(--c-faint);letter-spacing:0.06em;text-transform:uppercase">{{ r.verdict }}</span>
+              </div>
+              <div style="display:flex;align-items:stretch;gap:var(--space-2)">
+                <div style="flex:0 0 auto;background:{{ r.anchorTint }};border:1px solid {{ r.accent }};border-radius:var(--radius-md);padding:var(--space-2) 10px;min-width:184px">
+                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1px">
+                    <span style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--c-faint)">Pick {{ r.anchorPick }}</span>
+                    <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;color:{{ r.urgColor }}">{{ r.urgWord }}</span>
+                  </div>
+                  <div style="font-family:var(--font-heading);font-size:16px;font-weight:500;line-height:1.2">{{ r.anchorName }}</div>
+                  <div style="display:flex;align-items:baseline;gap:var(--space-2);margin-top:2px">
+                    <span style="font-size:11px;font-weight:600;color:{{ r.accent }}">{{ r.anchorPos }}</span>
+                    <span style="font-size:11px;color:var(--c-muted)">{{ r.anchorTeam }}</span>
+                    <span style="font-size:11px;color:var(--c-faint)">Sleeper {{ r.anchorAdp }}</span>
+                  </div>
+                </div>
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;justify-content:center">
+                  <sc-for list="{{ r.legs }}" as="g" hint-placeholder-count="3">
+                    <div style="display:flex;align-items:center;gap:var(--space-2);font-size:12px;line-height:1.35">
+                      <span style="flex:0 0 30px;color:var(--c-faint);font-variant-numeric:tabular-nums">{{ g.pick }}</span>
+                      <span style="flex:0 0 5px;height:5px;border-radius:50%;background:{{ g.color }}"></span>
+                      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ g.name }}</span>
+                      <span style="flex:0 0 auto;color:var(--c-muted);font-variant-numeric:tabular-nums">{{ g.odds }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--c-line-soft)">
+                <div><div style="font-size:10px;color:var(--c-faint);letter-spacing:0.06em;text-transform:uppercase">Over replacement</div><div style="font-size:17px;font-weight:500;color:{{ r.accent }};font-variant-numeric:tabular-nums">{{ r.vorpSum }}</div></div>
+                <div><div style="font-size:10px;color:var(--c-faint);letter-spacing:0.06em;text-transform:uppercase">Board value</div><div style="font-size:17px;font-weight:500;font-variant-numeric:tabular-nums">{{ r.compSum }}</div></div>
+                <div><div style="font-size:10px;color:var(--c-faint);letter-spacing:0.06em;text-transform:uppercase">Sharp edge</div><div style="font-size:17px;font-weight:500;font-variant-numeric:tabular-nums;color:{{ r.edgeColor }}">{{ r.edges }}</div></div>
+              </div>
+              <div style="font-size:11px;color:var(--c-muted);line-height:1.45;border-left:2px solid {{ r.accent }};padding-left:var(--space-2)">{{ r.cost }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <!-- board + rail -->
+      <div style="flex:1;min-height:0;display:grid;grid-template-columns:1fr 520px;gap:var(--space-3)">
+
+        <div style="background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius-md);display:flex;flex-direction:column;min-width:0;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:var(--space-3);padding:var(--space-2) var(--space-4);border-bottom:1px solid var(--c-line-soft);flex:0 0 auto">
+            <h3 style="margin:0;font-family:var(--font-heading);font-size:14px;font-weight:500">In Sleeper order, same as your draft room</h3>
+            <div style="display:flex;gap:var(--space-1)">
+              <sc-for list="{{ posFilters }}" as="p" hint-placeholder-count="5">
+                <span style="display:inline-flex;align-items:center;height:22px;padding:0 var(--space-3);border-radius:var(--radius-sm);font-size:11px;font-weight:500;background:{{ p.bg }};border:1px solid {{ p.border }};color:{{ p.color }};cursor:pointer">{{ p.label }}</span>
+              </sc-for>
+            </div>
+            <div style="flex:1"></div>
+            <span style="font-size:11px;color:var(--c-faint)">Kickers moved to round 14. Sharp is picks earlier than Sleeper, so positive is value.</span>
+          </div>
+          <div style="display:grid;grid-template-columns:22px 62px 1fr 62px 68px 86px 78px 66px 58px 1fr;padding:0 var(--space-4);height:28px;align-items:center;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--c-faint);border-bottom:1px solid var(--c-line-soft);flex:0 0 auto;white-space:nowrap;overflow:hidden">
+            <sc-for list="{{ cockpitCols }}" as="c" hint-placeholder-count="10">
+              <div onClick="{{ c.onClick }}" style="display:flex;align-items:center;gap:2px;justify-content:{{ c.justify }};color:{{ c.color }};cursor:{{ c.cursor }};padding-left:{{ c.padLeft }}">{{ c.label }}<i class="{{ c.caret }}" style="font-size:11px"></i></div>
+            </sc-for>
+          </div>
+          <div style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden">
+            <sc-for list="{{ boardItems }}" as="b" hint-placeholder-count="16">
+              <sc-if value="{{ b.isMarker }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:var(--space-3);height:26px;padding:0 var(--space-4);background:var(--c-accent-soft);border-top:1px solid var(--c-accent);border-bottom:1px solid var(--c-accent)">
+                  <i class="ph ph-caret-right" style="font-size:13px;color:var(--c-accent)"></i>
+                  <span style="font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--c-accent)">{{ b.markerLabel }}</span>
+                  <div style="flex:1;height:1px;background:linear-gradient(90deg,var(--c-accent),transparent)"></div>
+                  <span style="font-size:11px;color:var(--c-muted)">{{ b.markerNote }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ b.isRow }}" hint-placeholder-val="{{ true }}">
+              <div style="display:grid;grid-template-columns:22px 62px 1fr 62px 68px 86px 78px 66px 58px 1fr;padding:0 var(--space-4);height:32px;align-items:center;font-size:13px;border-bottom:1px solid var(--c-line-soft);background:{{ b.rowBg }}">
+                <div style="width:3px;height:18px;border-radius:2px;background:{{ b.posBar }}"></div>
+                <div style="font-variant-numeric:tabular-nums;color:{{ b.dimColor }};font-weight:500">{{ b.sl }}</div>
+                <div style="display:flex;align-items:baseline;gap:var(--space-2);min-width:0">
+                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:{{ b.nameColor }}">{{ b.name }}</span>
+                  <span style="flex:0 0 auto;font-size:11px;font-weight:600;color:{{ b.posColor }}">{{ b.pos }}</span>
+                  <span style="flex:0 0 auto;font-size:11px;color:var(--c-faint)">{{ b.team }}</span>
+                </div>
+                <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.edgeColor }}">{{ b.edge }}</div>
+                <div style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:{{ b.compColor }}">{{ b.comp }}</div>
+                <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.svColor }}">{{ b.sv }}<span style="color:var(--c-faint);font-size:11px"> {{ b.band }}</span></div>
+                <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.vorpColor }}">{{ b.vorp }}</div>
+                <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.fsrColor }}">{{ b.fsr }}</div>
+                <div style="text-align:center"><span style="display:inline-flex;align-items:center;height:18px;padding:0 var(--space-2);border-radius:var(--radius-sm);background:{{ b.urgBg }};color:{{ b.urgColor }};font-size:10px;font-weight:600;letter-spacing:0.04em">{{ b.urgWord }}</span></div>
+                <div style="padding-left:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:{{ b.noteColor }}">{{ b.note }}</div>
+              </div>
+              </sc-if>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:var(--space-3);min-height:0">
+
+          <div style="background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);flex:0 0 auto">
+            <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:var(--space-2)">
+              <h3 style="margin:0;font-family:var(--font-heading);font-size:14px;font-weight:500">Your roster against the plan</h3>
+              <span style="font-size:11px;color:var(--c-muted)">{{ rosterCount }}</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-3)">
+              <sc-for list="{{ roster }}" as="p" hint-placeholder-count="4">
+                <div>
+                  <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:3px">
+                    <span style="font-size:11px;font-weight:600;color:{{ p.color }}">{{ p.label }}</span>
+                    <span style="font-size:11px;color:var(--c-muted);font-variant-numeric:tabular-nums">{{ p.have }} of {{ p.target }}</span>
+                  </div>
+                  <div style="display:flex;gap:2px">
+                    <sc-for list="{{ p.slots }}" as="s" hint-placeholder-count="6">
+                      <span style="flex:1;height:5px;border-radius:2px;background:{{ s }}"></span>
+                    </sc-for>
+                  </div>
+                  <div style="font-size:10px;color:var(--c-faint);margin-top:3px;line-height:1.35">{{ p.note }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="background:var(--c-surface);border:1px solid var(--c-line);border-left:2px solid {{ highColor }};border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);flex:0 0 auto">
+            <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2)">
+              <h3 style="margin:0;font-family:var(--font-heading);font-size:14px;font-weight:500">{{ highTitle }}</h3>
+              <span style="display:inline-flex;align-items:center;height:18px;padding:0 var(--space-2);border-radius:var(--radius-sm);background:{{ highColor }};color:var(--c-bg);font-size:10px;font-weight:600;letter-spacing:0.06em">{{ highChip }}</span>
+            </div>
+            <div style="font-size:12px;line-height:1.5;color:var(--c-text)">{{ highText }}</div>
+            <div style="font-size:10px;color:var(--c-faint);margin-top:var(--space-2)">{{ highSource }}</div>
+          </div>
+
+          <div style="background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);flex:1;min-height:0;display:flex;flex-direction:column">
+            <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:var(--space-2)">
+              <h3 style="margin:0;font-family:var(--font-heading);font-size:14px;font-weight:500">{{ aheadTitle }}</h3>
+              <span style="font-size:11px;color:var(--c-faint)">Recomputes on every pick</span>
+            </div>
+            <div style="font-size:11px;color:var(--c-muted);line-height:1.45;margin-bottom:var(--space-2)">{{ aheadBlurb }}</div>
+            <div style="display:flex;flex-direction:column;gap:3px">
+              <sc-for list="{{ lookahead }}" as="l" hint-placeholder-count="6">
+                <div style="display:flex;align-items:center;gap:var(--space-2);padding:3px var(--space-2);border-radius:var(--radius-sm);background:var(--c-surface-2)">
+                  <span style="flex:0 0 3px;height:14px;border-radius:2px;background:{{ l.color }}"></span>
+                  <span style="flex:0 0 30px;font-size:11px;color:var(--c-faint);font-variant-numeric:tabular-nums">{{ l.sl }}</span>
+                  <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">{{ l.name }}</span>
+                  <span style="flex:0 0 auto;font-size:10px;font-weight:600;color:{{ l.color }}">{{ l.pos }}</span>
+                  <span style="flex:0 0 44px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:var(--c-muted)">{{ l.comp }}</span>
+                  <span style="flex:0 0 40px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums;color:{{ l.oddsColor }}">{{ l.odds }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="flex:1"></div>
+            <div style="display:flex;align-items:center;gap:var(--space-2);padding-top:var(--space-2);border-top:1px solid var(--c-line-soft);font-size:11px;color:var(--c-faint)">
+              <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--c-good)"></span>
+              Nine of nine analysis layers on. Odds are {{ nsim }} simulated drafts, band is their own spread.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- rule timeline -->
+      <div style="flex:0 0 auto;background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius-md);padding:var(--space-2) var(--space-4) var(--space-3)">
+        <div style="display:flex;align-items:baseline;gap:var(--space-3);margin-bottom:var(--space-2)">
+          <h3 style="margin:0;font-family:var(--font-heading);font-size:13px;font-weight:500">Every rule, and the round it starts watching</h3>
+          <span style="font-size:11px;color:var(--c-muted)">Filled means it is armed right now given what you hold. Hollow means it is waiting for a later round.</span>
+          <div style="flex:1"></div>
+          <span style="font-size:11px;color:var(--c-faint)">You are in round {{ currentRound }}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(16,1fr);gap:3px">
+          <sc-for list="{{ timeline }}" as="t" hint-placeholder-count="16">
+            <div style="border-top:2px solid {{ t.tickColor }};padding-top:var(--space-1);min-height:44px">
+              <div style="font-size:10px;color:{{ t.labelColor }};font-weight:{{ t.labelWeight }};margin-bottom:2px">R{{ t.round }}</div>
+              <div style="display:flex;flex-wrap:wrap;gap:2px">
+                <sc-for list="{{ t.rules }}" as="u" hint-placeholder-count="1">
+                  <span style="display:inline-flex;align-items:center;height:15px;padding:0 4px;border-radius:3px;background:{{ u.bg }};border:1px solid {{ u.border }};color:{{ u.color }};font-size:9px;font-weight:600;letter-spacing:0.02em">{{ u.code }}</span>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ FULL BOARD ═══════════ -->
+  <sc-if value="{{ isFullBoard }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;min-height:0;display:flex;flex-direction:column;gap:var(--space-3)">
+
+      <div style="background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius-md);padding:var(--space-3) var(--space-4);display:flex;align-items:flex-end;gap:var(--space-6);flex:0 0 auto">
+        <div style="flex:0 0 300px">
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--c-faint);margin-bottom:3px">Search</div>
+          <div style="height:32px;border:1px solid var(--c-line);border-radius:var(--radius-sm);background:var(--c-surface-2);display:flex;align-items:center;gap:var(--space-2);padding:0 10px;color:var(--c-faint);font-size:13px"><i class="ph ph-magnifying-glass" style="font-size:15px"></i>Type a name</div>
+        </div>
+        <div>
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--c-faint);margin-bottom:3px">Position</div>
+          <div style="display:flex;gap:var(--space-1)">
+            <sc-for list="{{ posFilters }}" as="p" hint-placeholder-count="5">
+              <span style="display:inline-flex;align-items:center;height:32px;padding:0 var(--space-4);border-radius:var(--radius-sm);font-size:12px;font-weight:500;background:{{ p.bg }};border:1px solid {{ p.border }};color:{{ p.color }};cursor:pointer">{{ p.label }}</span>
+            </sc-for>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--c-faint)">Sorted by</div>
+          <div style="height:32px;min-width:210px;display:flex;align-items:center;gap:var(--space-2);padding:0 10px 0 0;font-size:13px;margin-top:3px;color:var(--c-accent)">
+            <i class="{{ sortIcon }}" style="font-size:14px"></i>{{ sortLabel }}
+            <span style="font-size:11px;color:var(--c-faint)">click any heading</span>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--c-faint)">Show</div>
+          <div style="display:flex;gap:var(--space-1);margin-top:3px">
+            <sc-for list="{{ boardToggles }}" as="t" hint-placeholder-count="4">
+              <span style="display:inline-flex;align-items:center;gap:var(--space-2);height:32px;padding:0 var(--space-4);border-radius:var(--radius-sm);border:1px solid {{ t.border }};background:{{ t.bg }};color:{{ t.color }};font-size:12px;cursor:pointer"><i class="{{ t.icon }}" style="font-size:14px"></i>{{ t.label }}</span>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:1"></div>
+        <div style="text-align:right">
+          <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--c-faint)">Showing</div>
+          <div style="font-size:17px;font-weight:500;font-variant-numeric:tabular-nums">{{ shownCount }} <span style="font-size:12px;color:var(--c-faint)">of {{ totalCount }}</span></div>
+        </div>
+      </div>
+
+      <div style="flex:1;min-height:0;background:var(--c-surface);border:1px solid var(--c-line);border-radius:var(--radius-md);display:flex;flex-direction:column;overflow:hidden">
+        <div style="display:grid;grid-template-columns:20px 54px 1fr 46px 62px 66px 84px 70px 62px 62px 58px 66px 240px;padding:0 var(--space-4);height:30px;align-items:center;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--c-faint);border-bottom:1px solid var(--c-line);flex:0 0 auto;white-space:nowrap;overflow:hidden;background:var(--c-surface-2)">
+          <sc-for list="{{ fullCols }}" as="c" hint-placeholder-count="13">
+            <div onClick="{{ c.onClick }}" style="display:flex;align-items:center;gap:2px;justify-content:{{ c.justify }};color:{{ c.color }};cursor:{{ c.cursor }};padding-left:{{ c.padLeft }}">{{ c.label }}<i class="{{ c.caret }}" style="font-size:11px"></i></div>
+          </sc-for>
+        </div>
+        <div style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden">
+          <sc-for list="{{ fullItems }}" as="b" hint-placeholder-count="27">
+            <sc-if value="{{ b.isMarker }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:var(--space-3);height:24px;padding:0 var(--space-4);background:var(--c-accent-soft);border-top:1px solid var(--c-accent);border-bottom:1px solid var(--c-accent)">
+                <i class="ph ph-caret-right" style="font-size:12px;color:var(--c-accent)"></i>
+                <span style="font-size:10px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:var(--c-accent)">{{ b.markerLabel }}</span>
+                <div style="flex:1;height:1px;background:linear-gradient(90deg,var(--c-accent),transparent)"></div>
+                <span style="font-size:10px;color:var(--c-muted)">{{ b.markerNote }}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ b.isRow }}" hint-placeholder-val="{{ true }}">
+            <div style="display:grid;grid-template-columns:20px 54px 1fr 46px 62px 66px 84px 70px 62px 62px 58px 66px 240px;padding:0 var(--space-4);height:30px;align-items:center;font-size:12px;border-bottom:1px solid var(--c-line-soft);background:{{ b.rowBg }}">
+              <div style="width:3px;height:16px;border-radius:2px;background:{{ b.posBar }}"></div>
+              <div style="font-variant-numeric:tabular-nums;color:{{ b.dimColor }};font-weight:500">{{ b.sl }}</div>
+              <div style="display:flex;align-items:baseline;gap:var(--space-2);min-width:0">
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;color:{{ b.nameColor }}">{{ b.name }}</span>
+                <span style="flex:0 0 auto;font-size:10px;font-weight:600;color:{{ b.posColor }}">{{ b.pos }}</span>
+                <span style="flex:0 0 auto;font-size:10px;color:var(--c-faint)">{{ b.team }}</span>
+              </div>
+              <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.edgeColor }}">{{ b.edge }}</div>
+              <div style="text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:{{ b.compColor }}">{{ b.comp }}</div>
+              <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.vorpColor }}">{{ b.vorp }}</div>
+              <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.svColor }}">{{ b.sv }}<span style="color:var(--c-faint);font-size:10px"> {{ b.band }}</span></div>
+              <div style="text-align:right;font-variant-numeric:tabular-nums;color:var(--c-muted)">{{ b.bon }}</div>
+              <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.fsrColor }}">{{ b.fsr }}</div>
+              <div style="text-align:right;font-variant-numeric:tabular-nums;color:{{ b.injColor }}">{{ b.injPct }}</div>
+              <div style="text-align:center"><span style="display:inline-flex;align-items:center;height:17px;padding:0 var(--space-2);border-radius:var(--radius-sm);background:{{ b.urgBg }};color:{{ b.urgColor }};font-size:9px;font-weight:600">{{ b.urgWord }}</span></div>
+              <div style="text-align:right;font-size:11px;color:var(--c-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ b.archShort }}</div>
+              <div style="padding-left:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:{{ b.noteColor }}">{{ b.note }}</div>
+            </div>
+            </sc-if>
+          </sc-for>
+        </div>
+        <div style="flex:0 0 auto;padding:var(--space-2) var(--space-4);border-top:1px solid var(--c-line);display:flex;align-items:center;gap:var(--space-6);font-size:11px;color:var(--c-faint)">
+          <div style="display:flex;gap:var(--space-4)">
+            <sc-for list="{{ legend }}" as="l" hint-placeholder-count="4">
+              <span style="display:inline-flex;align-items:center;gap:var(--space-2);color:var(--c-muted)"><span style="width:8px;height:8px;border-radius:2px;background:{{ l.color }}"></span>{{ l.label }}</span>
+            </sc-for>
+          </div>
+          <div style="flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--c-line) 48px,var(--c-line) calc(100% - 48px),transparent)"></div>
+          <span>Sharp is how many picks earlier the high stakes rooms take him than Sleeper does. Positive means the sharps are higher on him, which is where value hides.</span>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1920,&quot;height&quot;:1080},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark' | 'light'&quot;,&quot;section&quot;:&quot;Appearance&quot;}}">
+const PHI = z => {
+  const s = z < 0 ? -1 : 1; const x = Math.abs(z) / Math.SQRT2;
+  const a1=.254829592,a2=-.284496736,a3=1.421413741,a4=-1.453152027,a5=1.061405429,p=.3275911;
+  const t = 1/(1+p*x);
+  return 0.5*(1+s*(1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x)));
+};
+
+// Every warning rule, and the round it starts watching. Ported from the guardrails
+// doc plus W16 to W18 from the build spec. `from` is the first round it can fire.
+const RULES = [
+  { code: 'W6',  from: 2,  label: 'Tight end too early',            sev: 'Medium' },
+  { code: 'W1',  from: 5,  label: 'Back in the dead zone',          sev: 'High' },
+  { code: 'W2',  from: 3,  label: 'Third back too early',           sev: 'High' },
+  { code: 'W3',  from: 1,  label: 'Quarterback early',              sev: 'Medium' },
+  { code: 'W11', from: 1,  label: 'Factors and market both cold',   sev: 'Medium' },
+  { code: 'W10', from: 3,  label: 'Over a position target',         sev: 'Medium' },
+  { code: 'W12', from: 7,  label: 'Receiver with no third back',    sev: 'High' },
+  { code: 'W7',  from: 8,  label: 'Fewer than four receivers',      sev: 'High' },
+  { code: 'W16', from: 8,  label: 'No tight end on the miss path',  sev: 'Medium' },
+  { code: 'W18', from: 7,  label: 'Band oversubscribed',            sev: 'High' },
+  { code: 'W17', from: 6,  label: 'Your own drift at premium spots', sev: 'High' },
+  { code: 'W4',  from: 10, label: 'No quarterback yet',             sev: 'High' },
+  { code: 'W15', from: 11, label: 'Back dart too early',            sev: 'Low' },
+  { code: 'W5',  from: 12, label: 'Only one tight end',             sev: 'Medium' },
+  { code: 'W8',  from: 12, label: 'Receiver past the cliff',        sev: 'Medium' },
+  { code: 'W13', from: 15, label: 'No second quarterback',          sev: 'Low' },
+  { code: 'W14', from: 14, label: 'Kicker before the run',          sev: 'Medium' },
+];
+
+class Component extends DCLogic {
+  state = {
+    data: (typeof window !== 'undefined' && window.BOARD_DATA) || null,
+    view: 'p5', tab: 'cockpit', sortKey: 'sl', sortDir: 1,
+  };
+
+  // Sleeper order is the default because that is the order the real draft room shows.
+  // Clicking a header sorts on it; clicking the same header again flips direction.
+  sortBy(key, defaultDir) {
+    const s = this.state;
+    if (s.sortKey === key) this.setState({ sortDir: -s.sortDir });
+    else this.setState({ sortKey: key, sortDir: defaultDir });
+  }
+
+  sortValue(p, key) {
+    switch (key) {
+      case 'sl': return p.sl === null ? 9999 : p.sl;
+      case 'name': return p.p.toLowerCase();
+      case 'edge': return -(this.edgeOf(p) === null ? -999 : this.edgeOf(p));
+      case 'comp': return -p.comp;
+      case 'sv': return -p.sv;
+      case 'vorp': return -(p.vorp === null ? -999 : p.vorp);
+      case 'fsr': return -(p.fsr === null ? -999 : p.fsr);
+      case 'bon': return -p.bon;
+      case 'inj': return -(p.pinj === null || p.pinj === undefined ? -1 : p.pinj);
+      case 'arch': return this.plain(p.arch).toLowerCase();
+      default: return p.sl === null ? 9999 : p.sl;
+    }
+  }
+
+  buildCols(defs) {
+    return defs.map(c => {
+      const active = c.key && this.state.sortKey === c.key;
+      return {
+        label: c.label, justify: c.justify || 'flex-start',
+        padLeft: c.padLeft || '0px',
+        cursor: c.key ? 'pointer' : 'default',
+        color: active ? 'var(--c-accent)' : (c.accent ? 'var(--c-accent)' : 'var(--c-faint)'),
+        caret: active ? (this.state.sortDir === 1 ? 'ph ph-caret-up' : 'ph ph-caret-down') : '',
+        onClick: c.key ? (() => this.sortBy(c.key, 1)) : undefined,
+      };
+    });
+  }
+
+  componentDidMount() {
+    if (!this.state.data) {
+      const t = setInterval(() => {
+        if (window.BOARD_DATA) { clearInterval(t); this.setState({ data: window.BOARD_DATA }); }
+      }, 60);
+      setTimeout(() => clearInterval(t), 8000);
+    }
+  }
+
+  posColor(p) { return { QB: 'var(--c-qb)', RB: 'var(--c-rb)', WR: 'var(--c-wr)', TE: 'var(--c-te)' }[p] || 'var(--c-muted)'; }
+  posTint(p) {
+    const v = { QB: '--c-qb', RB: '--c-rb', WR: '--c-wr', TE: '--c-te' }[p];
+    return v ? 'color-mix(in srgb, var(' + v + ') 17%, transparent)' : 'var(--c-surface-2)';
+  }
+  posLong(p) { return { QB: 'Quarterback', RB: 'Running back', WR: 'Receiver', TE: 'Tight end' }[p] || p; }
+  heat(v, lo, hi) {
+    if (v === null || v === undefined || Number.isNaN(v)) return ['var(--c-faint)', 'transparent'];
+    if (v >= hi) return ['var(--c-good)', 'oklch(0.734 0.125 155 / 0.16)'];
+    if (v <= lo) return ['var(--c-bad)', 'oklch(0.660 0.150 25 / 0.16)'];
+    return ['var(--c-text)', 'var(--c-surface-2)'];
+  }
+  plain(s) {
+    if (!s) return '';
+    return String(s).replace(/\u2014|\u2013/g, ',').replace(/\s+-\s+/g, ', ')
+      .replace(/\u26a0\ufe0f?/g, '').replace(/\s*,\s*,/g, ',').replace(/\s{2,}/g, ' ').trim();
+  }
+  surv(pl, from, to) {
+    if (pl.mu === null || pl.mu === undefined) return 0.5;
+    const S = x => 1 - PHI((Math.log(Math.max(x, 1e-6)) - pl.mu) / pl.sg);
+    const a = S(from), b = S(to);
+    return a > 1e-9 ? Math.min(0.995, Math.max(0.005, b / a)) : 0.005;
+  }
+  // div is nffc_rank minus sleeper_rank, so a bigger number means the sharps take him
+  // LATER. Flip it, so a positive edge means the high stakes rooms are higher on him
+  // than Sleeper is, which is the value side.
+  edgeOf(pl) { return (pl.div === null || pl.div === undefined) ? null : -pl.div; }
+
+  // The pick you are about to spend is only well spent on someone who will not be
+  // there next time. This is what stops the board suggesting a quarterback in round
+  // one, or Trevor Lawrence in round six when he goes in round eight.
+  urgency(waitOdds, refPick, availOdds) {
+    // A player who will not even reach you cannot be waited on. Say gone, not wait.
+    if (availOdds !== undefined && availOdds < 0.15) return { word: 'GONE', color: 'var(--c-bad)', bg: 'oklch(0.660 0.150 25 / 0.14)', long: 'Gone before your turn', spend: false };
+    if (waitOdds >= 0.7) return { word: 'WAIT', color: 'var(--c-warn)', bg: 'oklch(0.760 0.140 78 / 0.14)', long: 'He is there at ' + refPick, spend: false };
+    if (waitOdds >= 0.4) return { word: 'CLOSE', color: 'var(--c-text)', bg: 'var(--c-surface-2)', long: 'Coin flip to reach ' + refPick, spend: true };
+    return { word: 'NOW', color: 'var(--c-good)', bg: 'oklch(0.734 0.125 155 / 0.16)', long: 'Gone before ' + refPick, spend: true };
+  }
+
+  candidatesFor(pick, players, used, shape, gateAvail, fromPick, nextAfter) {
+    const intel = [], sharp = [];
+    for (const pl of players) {
+      if (used.has(pl.p) || (shape[pl.pos] || 0) <= 0) continue;
+      if (pl.it === 'hard_avoid') continue;
+      const avail = fromPick === pick ? 1 : this.surv(pl, fromPick, pick);
+      if (avail < gateAvail) continue;
+      const wait = this.surv(pl, pick, nextAfter);
+      if (wait >= 0.7) continue; // you can get him later, so this pick is wasted on him
+      const windows = String(pl.iw || '').split(',').map(s => s.trim());
+      const rec = { pl, avail, wait };
+      if (pl.it === 'target' && windows.includes(String(pick))) intel.push(rec);
+      else sharp.push(rec);
+    }
+    intel.sort((a, b) => (a.pl.ip || 99) - (b.pl.ip || 99) || b.pl.comp - a.pl.comp);
+    // Fallback when your own list runs thin: whoever the sharp market takes earliest
+    // relative to Sleeper, which is where the price is wrong.
+    sharp.sort((a, b) => (this.edgeOf(b.pl) || 0) - (this.edgeOf(a.pl) || 0) || b.pl.comp - a.pl.comp);
+    return { intel, sharp, all: intel.concat(sharp) };
+  }
+
+  buildRoute(anchor, remaining, players, schedule, thisPick, ownerPicks) {
+    const shape = Object.assign({}, remaining);
+    shape[anchor.pos] = (shape[anchor.pos] || 0) - 1;
+    const used = new Set([anchor.p]);
+    const takenAt = { QB: anchor.pos === 'QB' ? 1 : 0, TE: anchor.pos === 'TE' ? 1 : 0 };
+    const legs = [];
+    for (const pk of schedule) {
+      const after = ownerPicks.find(p => p > pk) || pk + 12;
+      const cands = this.candidatesFor(pk, players, used, shape, 0.5, thisPick, after);
+      const pick = cands.all.find(c => {
+        if (c.pl.pos === 'QB' && takenAt.QB >= 1 && pk < 116) return false;
+        if (c.pl.pos === 'TE' && takenAt.TE >= 1 && pk < 101) return false;
+        return true;
+      });
+      if (!pick) break;
+      legs.push({ pick: pk, pl: pick.pl, odds: pick.avail });
+      used.add(pick.pl.p); shape[pick.pl.pos] -= 1;
+      if (takenAt[pick.pl.pos] !== undefined) takenAt[pick.pl.pos] += 1;
+    }
+    const all = [anchor].concat(legs.map(l => l.pl));
+    return {
+      anchor, legs, shape, all,
+      vorpSum: all.reduce((s, p) => s + (p.vorp || 0), 0),
+      compSum: all.reduce((s, p) => s + (p.comp || 0), 0),
+      edges: all.reduce((s, p) => s + Math.max(this.edgeOf(p) || 0, 0), 0),
+    };
+  }
+
+  renderVals() {
+    const all = this.state.data;
+    const legend = ['QB', 'RB', 'WR', 'TE'].map(p => ({ label: this.posLong(p), color: this.posColor(p) }));
+    const posFilters = ['All', 'QB', 'RB', 'WR', 'TE'].map((p, i) => ({
+      label: p, bg: i === 0 ? 'var(--c-accent-soft)' : this.posTint(p),
+      border: i === 0 ? 'var(--c-accent)' : 'transparent',
+      color: i === 0 ? 'var(--c-accent)' : this.posColor(p),
+    }));
+    const tabs = [
+      { key: 'cockpit', label: 'Cockpit', icon: 'ph ph-crosshair' },
+      { key: 'board', label: 'Full board', icon: 'ph ph-list' },
+    ].map(t => ({
+      label: t.label, icon: t.icon, onClick: () => this.setState({ tab: t.key }),
+      bg: this.state.tab === t.key ? 'var(--c-accent)' : 'transparent',
+      color: this.state.tab === t.key ? 'var(--c-bg)' : 'var(--c-muted)',
+      border: this.state.tab === t.key ? 'var(--c-accent)' : 'transparent',
+    }));
+    const stateTabs = [
+      { key: 'p5', label: 'Pick 5' }, { key: 'p53', label: 'Pick 53' },
+    ].map(t => ({
+      label: t.label, onClick: () => this.setState({ view: t.key }),
+      bg: this.state.view === t.key ? 'var(--c-accent-soft)' : 'transparent',
+      color: this.state.view === t.key ? 'var(--c-accent)' : 'var(--c-faint)',
+      border: this.state.view === t.key ? 'var(--c-accent)' : 'transparent',
+    }));
+
+    const base = { theme: this.props.theme || 'dark', legend, posFilters, tabs, stateTabs,
+      isCockpit: this.state.tab === 'cockpit', isFullBoard: this.state.tab === 'board',
+      routes: [], boardItems: [], fullItems: [], cockpitCols: [], fullCols: [], roster: [],
+      lookahead: [], interveningChips: [], timeline: [], warnChips: [], boardToggles: [] };
+    if (!all) return base;
+    const d = all[this.state.view] || all.p5;
+    if (!d) return base;
+
+    const players = d.players.filter(p => p.it !== 'hard_avoid');
+    const onClockNow = !!d.ownerOnClock;
+    const thisPick = d.ownerThisTurn;
+    const survTarget = d.survTarget;
+    const turnAfter = d.turnAfter;
+    const survLabel = 'At ' + survTarget;
+    const waitRef = onClockNow ? survTarget : turnAfter;
+    const waitOf = p => onClockNow ? p.sv : p.svN;
+
+    const tells = { Nick: 'tight end early', Dylan: 'stacks tight ends', Cailen: 'tight end round 5',
+      Tyler: 'waits on everything', Asa: 'quarterback round 4', Greg: 'earliest quarterback',
+      Ryan: 'quarterback round 7', Jayden: 'quarterback round 9', Colin: 'swings either way',
+      Joseph: 'least predictable', Kaiden: 'tight end round 4' };
+    const seenM = {};
+    const interveningChips = d.intervening.map(x => {
+      seenM[x.m] = (seenM[x.m] || 0) + 1;
+      return { name: x.m, tell: seenM[x.m] > 1 ? 'again' : (tells[x.m] || ''),
+        color: seenM[x.m] > 1 ? 'var(--c-faint)' : 'var(--c-accent)' };
+    });
+
+    const target = { QB: 2, RB: 5, WR: 6, TE: 2 };
+    const have = {}; d.ownerRoster.forEach(p => { have[p.position] = (have[p.position] || 0) + 1; });
+    const notes = d.ownerRoster.length
+      ? { QB: 'Windows 53 and 101.', RB: 'The thin spot.', WR: 'Two more by 101.', TE: 'The fork is here.' }
+      : { QB: 'Nothing yet.', RB: 'Five to find.', WR: 'Both flex spots want these.', TE: 'Two, one of them late.' };
+    const roster = ['QB', 'RB', 'WR', 'TE'].map(p => ({
+      label: p, color: this.posColor(p), have: have[p] || 0, target: target[p], note: notes[p],
+      slots: Array.from({ length: target[p] }, (_, i) => i < (have[p] || 0) ? this.posColor(p) : 'var(--c-surface-2)'),
+    }));
+    const remaining = {}; Object.keys(target).forEach(k => remaining[k] = target[k] - (have[k] || 0));
+
+    // ── routes: your own names for this pick, in priority order, then sharp market
+    const ownerPicks = d.ownerPicks || [];
+    const schedule = ownerPicks.filter(p => p > thisPick).slice(0, 3);
+    const lastPick = schedule.length ? schedule[schedule.length - 1] : thisPick;
+    const cands = this.candidatesFor(thisPick, players, new Set(), remaining, 0, thisPick, waitRef);
+    const anchorRecs = cands.all.slice(0, 3);
+    const usedIntel = cands.intel.length;
+    const built = anchorRecs.map(r => this.buildRoute(r.pl, remaining, players, schedule, thisPick, ownerPicks));
+    built.sort((a, b) => (b.vorpSum + b.compSum + b.edges * 2) - (a.vorpSum + a.compSum + a.edges * 2));
+
+    const maxV = Math.max.apply(null, built.map(r => r.vorpSum).concat([-1e9]));
+    const maxE = Math.max.apply(null, built.map(r => r.edges).concat([-1e9]));
+    const claimed = new Set();
+    const verdictOf = r => {
+      const tries = [[r.vorpSum === maxV, 'Most points'], [r.edges === maxE && maxE > 0, 'Best price'],
+        [true, 'Even on value']];
+      for (const [ok, label] of tries) if (ok && !claimed.has(label)) { claimed.add(label); return label; }
+      return 'Even on value';
+    };
+    const tags = ['ROUTE A', 'ROUTE B', 'ROUTE C'];
+    const routes = built.map((r, i) => {
+      const u = this.urgency(waitOf(r.anchor), waitRef, onClockNow ? 1 : r.anchor.sv);
+      const short = Object.keys(r.shape).filter(k => r.shape[k] > 0).sort((a, b) => r.shape[b] - r.shape[a]);
+      const cost = short.length
+        ? 'After ' + lastPick + ' you still owe ' + short.slice(0, 2).map(k => r.shape[k] + ' ' + this.posLong(k).toLowerCase() + (r.shape[k] > 1 ? 's' : '')).join(' and ') + '.'
+        : 'This path fills every slot you planned for.';
+      const firstOther = r.legs.find(l => l.pl.pos !== r.anchor.pos && (l.pl.pos === 'QB' || l.pl.pos === 'TE'));
+      return {
+        tag: tags[i], verdict: verdictOf(r), accent: this.posColor(r.anchor.pos),
+        anchorTint: this.posTint(r.anchor.pos), anchorPick: thisPick,
+        plan: firstOther
+          ? this.posLong(r.anchor.pos) + ' now, ' + this.posLong(firstOther.pl.pos).toLowerCase() + ' at ' + firstOther.pick
+          : this.posLong(r.anchor.pos) + ' now, depth after',
+        anchorName: r.anchor.p, anchorPos: this.posLong(r.anchor.pos), anchorTeam: r.anchor.tm,
+        anchorAdp: r.anchor.sl === null ? 'none' : String(r.anchor.sl),
+        urgWord: u.long, urgColor: u.color,
+        legs: r.legs.map(l => ({ pick: l.pick, name: l.pl.p, color: this.posColor(l.pl.pos), odds: Math.round(l.odds * 100) + '%' })),
+        vorpSum: (r.vorpSum >= 0 ? '+' : '') + r.vorpSum.toFixed(0),
+        compSum: r.compSum.toFixed(0),
+        edges: '+' + r.edges.toFixed(0),
+        edgeColor: r.edges >= 20 ? 'var(--c-good)' : 'var(--c-text)',
+        cost,
+      };
+    });
+
+    // ── rows
+    const mkRow = (p) => {
+      const edge = this.edgeOf(p);
+      const wait = waitOf(p);
+      const u = this.urgency(wait, waitRef, onClockNow ? 1 : p.sv);
+      const gone = p.sv < 0.15 && !onClockNow;
+      const [compColor] = this.heat(p.comp, 15, 45);
+      const [svColor] = this.heat(p.sv, 0.35, 0.8);
+      const [vorpColor] = this.heat(p.vorp, 0, 30);
+      const [fsrColor] = this.heat(p.fsr, 0, 20);
+      const [edgeColor] = this.heat(edge, -8, 8);
+      const bandPts = Math.round(p.se * 196);
+      return {
+        name: p.p, pos: p.pos, team: p.tm, sl: p.sl === null ? 'none' : String(p.sl),
+        posColor: gone ? 'var(--c-faint)' : this.posColor(p.pos),
+        posBar: gone ? 'var(--c-line)' : this.posColor(p.pos),
+        nameColor: gone ? 'var(--c-faint)' : 'var(--c-text)',
+        dimColor: gone ? 'var(--c-faint)' : 'var(--c-muted)',
+        rowBg: gone ? 'transparent' : 'transparent',
+        comp: p.comp.toFixed(1), compColor: gone ? 'var(--c-faint)' : compColor,
+        sv: Math.round(p.sv * 100) + '%', svColor: gone ? 'var(--c-faint)' : svColor,
+        band: bandPts > 0 ? '\u00b1' + bandPts : '',
+        vorp: (p.vorp >= 0 ? '+' : '') + p.vorp.toFixed(0), vorpColor: gone ? 'var(--c-faint)' : vorpColor,
+        fsr: p.fsr === null ? 'none' : String(p.fsr), fsrColor: gone ? 'var(--c-faint)' : fsrColor,
+        bon: '+' + p.bon.toFixed(1),
+        injPct: (p.pinj === null || p.pinj === undefined) ? 'none' : Math.round(p.pinj * 100) + '%',
+        injColor: (p.pinj !== null && p.pinj !== undefined && p.pinj >= 0.25) ? 'var(--c-bad)' : 'var(--c-muted)',
+        archShort: this.plain(p.arch).split(',')[0].slice(0, 22) || 'none',
+        edge: edge === null ? 'none' : (edge > 0 ? '+' + edge : String(edge)),
+        edgeColor: gone ? 'var(--c-faint)' : edgeColor,
+        urgWord: u.word, urgColor: u.color, urgBg: u.bg,
+        note: this.plain(p.inote) || (p.it === 'target' ? 'Your list, pick ' + (p.iw || '') : (p.it === 'fade' ? 'You faded him' : '')),
+        noteColor: p.it === 'fade' ? 'var(--c-bad)' : (p.it === 'target' ? 'var(--c-accent)' : 'var(--c-faint)'),
+      };
+    };
+    const bySleeper = [...players].sort((a, b) => (a.sl === null ? 9999 : a.sl) - (b.sl === null ? 9999 : b.sl));
+    const sortKey = this.state.sortKey, dir = this.state.sortDir;
+    const sorted = [...players].sort((a, b) => {
+      const va = this.sortValue(a, sortKey), vb = this.sortValue(b, sortKey);
+      if (va < vb) return -dir; if (va > vb) return dir;
+      return (a.sl === null ? 9999 : a.sl) - (b.sl === null ? 9999 : b.sl);
+    });
+
+    // Three rounds ahead, which is 36 players.
+    const visible = sorted.slice(0, 36);
+
+    // Your pick lines, the way the Sleeper board draws them. Only meaningful while the
+    // list is in Sleeper order, because that is when row position stands in for pick
+    // number. On any other sort the lines would be fiction, so they are dropped.
+    const inSleeperOrder = sortKey === 'sl' && dir === 1;
+    const picksUntilYours = Math.max(0, survTarget - d.onClock);
+    const markers = {};
+    if (inSleeperOrder) {
+      let offset = picksUntilYours;
+      const yourPicks = ownerPicks.filter(p => p >= survTarget);
+      let prev = d.onClock;
+      for (const yp of yourPicks) {
+        offset = yp - d.onClock - (yourPicks.indexOf(yp));
+        if (offset > 36) break;
+        markers[offset] = {
+          label: 'Your pick ' + yp,
+          note: yp === survTarget ? 'everything above here is likely gone' : 'round ' + Math.ceil(yp / 12),
+        };
+        prev = yp;
+      }
+    }
+    const buildItems = (list) => {
+      const out = [];
+      list.forEach((p, i) => {
+        const m = markers[i];
+        if (m) out.push({ isMarker: true, isRow: false, markerLabel: m.label, markerNote: m.note });
+        out.push(Object.assign({ isMarker: false, isRow: true }, mkRow(p)));
+      });
+      return out;
+    };
+    const boardItems = buildItems(visible);
+    const fullItems = buildItems(visible);
+
+    const cockpitCols = this.buildCols([
+      { label: '' }, { label: 'Sleeper', key: 'sl' }, { label: 'Player', key: 'name' },
+      { label: 'Sharp', key: 'edge', justify: 'flex-end' },
+      { label: 'Value', key: 'comp', justify: 'flex-end', accent: true },
+      { label: survLabel, key: 'sv', justify: 'flex-end' },
+      { label: 'Over repl', key: 'vorp', justify: 'flex-end' },
+      { label: 'Factors', key: 'fsr', justify: 'flex-end' },
+      { label: 'Timing', justify: 'center' },
+      { label: 'Your note', padLeft: '10px' },
+    ]);
+    const fullCols = this.buildCols([
+      { label: '' }, { label: 'Sleeper', key: 'sl' }, { label: 'Player', key: 'name' },
+      { label: 'Sharp', key: 'edge', justify: 'flex-end' },
+      { label: 'Value', key: 'comp', justify: 'flex-end' },
+      { label: 'Over repl', key: 'vorp', justify: 'flex-end' },
+      { label: survLabel, key: 'sv', justify: 'flex-end' },
+      { label: 'Bonus', key: 'bon', justify: 'flex-end' },
+      { label: 'Factors', key: 'fsr', justify: 'flex-end' },
+      { label: 'Injury', key: 'inj', justify: 'flex-end' },
+      { label: 'Timing', justify: 'center' },
+      { label: 'Archetype', key: 'arch', justify: 'flex-end' },
+      { label: 'Your note', padLeft: '10px' },
+    ]);
+
+    // ── lookahead
+    const routeNames = new Set(built.reduce((a, r) => a.concat(r.all.map(x => x.p)), []));
+    const lookahead = bySleeper.filter(p => !routeNames.has(p.p))
+      .map(p => ({ p, odds: this.surv(p, survTarget, turnAfter) }))
+      .filter(x => x.odds >= 0.5).slice(0, 6)
+      .map(x => ({
+        name: x.p.p, pos: x.p.pos, sl: x.p.sl === null ? '' : String(x.p.sl),
+        color: this.posColor(x.p.pos), comp: x.p.comp.toFixed(1),
+        odds: Math.round(x.odds * 100) + '%', oddsColor: this.heat(x.odds, 0.5, 0.75)[0],
+      }));
+
+    // ── warnings and the rule timeline
+    const currentRound = Math.max(1, Math.ceil(survTarget / 12));
+    const armed = code => {
+      const r = RULES.find(x => x.code === code);
+      return !!r && currentRound >= r.from;
+    };
+    const firing = [];
+    if (currentRound >= 8 && (have.WR || 0) < 4) firing.push('W7');
+    if (currentRound >= 10 && !(have.QB || 0)) firing.push('W4');
+    if (currentRound >= 12 && (have.TE || 0) === 1) firing.push('W5');
+    if (currentRound >= 7 && (have.RB || 0) < 3) firing.push('W12');
+    const nextRound = [];
+    if (currentRound + 1 >= 7 && (have.RB || 0) < 3) nextRound.push('W12');
+    if (currentRound + 1 >= 8 && (have.WR || 0) < 4) nextRound.push('W7');
+    if (currentRound + 1 >= 6 && !(have.QB || 0) && !(have.TE || 0)) nextRound.push('W17');
+    const uniqNext = nextRound.filter(c => firing.indexOf(c) === -1);
+
+    const warnChips = [];
+    warnChips.push(firing.length
+      ? { label: firing.length + (firing.length === 1 ? ' rule firing now' : ' rules firing now'), icon: 'ph ph-warning-circle',
+          bg: 'oklch(0.660 0.150 25 / 0.16)', border: 'var(--c-bad)', color: 'var(--c-bad)' }
+      : { label: 'Nothing firing', icon: 'ph ph-check-circle', bg: 'oklch(0.734 0.125 155 / 0.16)', border: 'var(--c-good)', color: 'var(--c-good)' });
+    warnChips.push(uniqNext.length
+      ? { label: uniqNext.length + ' arms next round', icon: 'ph ph-clock-countdown', bg: 'oklch(0.760 0.140 78 / 0.14)', border: 'var(--c-warn)', color: 'var(--c-warn)' }
+      : { label: 'Clear next round too', icon: 'ph ph-clock', bg: 'var(--c-surface-2)', border: 'var(--c-line)', color: 'var(--c-muted)' });
+
+    const sevColor = { High: 'var(--c-bad)', Medium: 'var(--c-warn)', Low: 'var(--c-muted)' };
+    const timeline = Array.from({ length: 16 }, (_, i) => {
+      const rnd = i + 1;
+      const rules = RULES.filter(r => r.from === rnd).map(r => {
+        const isArmed = armed(r.code);
+        const isFiring = firing.indexOf(r.code) !== -1;
+        return {
+          code: r.code,
+          bg: isFiring ? sevColor[r.sev] : (isArmed ? 'color-mix(in srgb, ' + sevColor[r.sev] + ' 20%, transparent)' : 'transparent'),
+          border: isArmed ? sevColor[r.sev] : 'var(--c-line)',
+          color: isFiring ? 'var(--c-bg)' : (isArmed ? sevColor[r.sev] : 'var(--c-faint)'),
+        };
+      });
+      const isNow = rnd === currentRound;
+      return {
+        round: String(rnd), rules,
+        tickColor: rnd < currentRound ? 'var(--c-line-soft)' : (isNow ? 'var(--c-accent)' : 'var(--c-line)'),
+        labelColor: isNow ? 'var(--c-accent)' : 'var(--c-faint)',
+        labelWeight: isNow ? '600' : '400',
+      };
+    });
+
+    const boardToggles = [
+      { label: 'Hide the gone', icon: 'ph ph-eye-slash', bg: 'var(--c-surface-2)', border: 'var(--c-line)', color: 'var(--c-muted)' },
+      { label: 'My notes only', icon: 'ph ph-bookmark-simple', bg: 'var(--c-surface-2)', border: 'var(--c-line)', color: 'var(--c-muted)' },
+      { label: 'Value gaps', icon: 'ph ph-trend-up', bg: 'var(--c-accent-soft)', border: 'var(--c-accent)', color: 'var(--c-accent)' },
+    ];
+
+    const goneList = players.filter(p => waitOf(p) < 0.4).length;
+    const waitList = players.filter(p => waitOf(p) >= 0.7).length;
+
+    const copy = onClockNow ? {
+      onClockPick: String(thisPick), clockLabel: 'You are on the clock', clockColor: 'var(--c-accent)',
+      clockSub: 'Round ' + d.round + ', your first turn',
+      nextLabel: 'Then you wait until', nextPick: String(survTarget),
+      nextSub: '14 picks, all seven on your right, twice',
+      windowLabel: 'Who picks before you are back',
+      routesTitle: 'Three ways to start',
+      routesBlurb: 'Anchored on your own names for pick ' + thisPick + (usedIntel < 3 ? ', topped up with whoever the sharp market takes earliest' : ', in the priority order you wrote') + '. Anyone still there at ' + survTarget + ' is left out, because this pick would be wasted on him.',
+      survLabel, rosterCount: 'nothing in yet',
+      highTitle: 'Read this one', highChip: 'PLAN NOTE', highColor: 'var(--c-warn)',
+      highText: 'This is the highest bust band on the board. Backs bust 21.8 percent of the time here and carry almost all of the catastrophic tail alone. Receivers bust 18.8 percent. You said take the upside anyway, so the board does, but ' + waitList + ' of the names in front of you will still be here at ' + survTarget + '. Only ' + goneList + ' will not.',
+      highSource: 'Source: your stated round one intent, and the league winner and bust bands',
+      aheadTitle: 'Still here at ' + survTarget,
+      aheadBlurb: 'Fourteen picks separate ' + thisPick + ' from ' + survTarget + '. These are the best names the simulation leaves on the board, which is the same list telling you what not to spend this pick on.',
+    } : {
+      onClockPick: String(d.onClock), clockLabel: 'On the clock', clockColor: 'var(--c-text)',
+      clockSub: 'Round ' + d.round + ', ' + d.onClockManager,
+      nextLabel: 'You are up next at', nextPick: String(thisPick),
+      nextSub: '8 picks away, all four on your left, twice',
+      windowLabel: 'Between now and your turn',
+      routesTitle: 'Three ways to finish',
+      routesBlurb: 'Anchored on your own names for pick ' + thisPick + (usedIntel < 3 ? ', topped up with whoever the sharp market takes earliest' : ', in the priority order you wrote') + '. Anyone still there at ' + turnAfter + ' is left out, because this pick would be wasted on him.',
+      survLabel, rosterCount: d.ownerRoster.length + ' of 16 in',
+      highTitle: 'Read this one', highChip: 'HIGH', highColor: 'var(--c-bad)',
+      highText: 'You have one running back through 44 picks. The next one comes out of a pool where a startable back is worth ' + Math.round(d.replacement.RB) + ' points, so the gap between your second back and a bench body is small. Every route above spends a pick there.',
+      highSource: 'Source: owner review, structural exposure item 3',
+      aheadTitle: 'Still here at ' + turnAfter,
+      aheadBlurb: 'Fifteen picks separate ' + survTarget + ' from ' + turnAfter + '. These names survive the wait, which is exactly why none of them should take your pick at ' + survTarget + '.',
+    };
+
+    return Object.assign(base, {
+      routes, boardItems, fullItems, cockpitCols, fullCols, roster, lookahead, interveningChips,
+      timeline, warnChips, boardToggles,
+      // One owner for the sort state: the headers set it, this reads it back.
+      sortLabel: ({ sl: 'Sleeper order', name: 'Player name', edge: 'Sharp edge', comp: 'Board value',
+        sv: 'Odds at ' + survTarget, vorp: 'Points over replacement', fsr: 'Factor score',
+        bon: 'Bonus scoring', inj: 'Injury rate', arch: 'Archetype' }[sortKey] || 'Sleeper order')
+        + (dir === 1 ? ', ascending' : ', descending'),
+      sortIcon: dir === 1 ? 'ph ph-sort-ascending' : 'ph ph-sort-descending',
+      currentRound: String(currentRound), nsim: String(d.nsim || 2000),
+      shownCount: String(visible.length), totalCount: String(players.length),
+      lastPickAgo: onClockNow ? '9 seconds ago' : '14 seconds ago',
+    }, copy);
+  }
+}
+</script>
+</body>
+</html>

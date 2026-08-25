@@ -66,6 +66,13 @@ Settled in the scoping conversation. These override the open items they correspo
 | R27 | Source offsets | Computed at build time into `adp_source_offsets.csv`, never hard-coded | §4.4 |
 | R28 | Intel layer | `2026/PLAYER-INTEL-<year>.md` → parsed. `target`/`fade` capped at ±10 VOR; `hard_avoid` is a filter | — |
 | R29 | Join severity | Unmatched top-150 ADP player = **hard failure**, not a note | §5.3 |
+| R30 | MC depth | Simulate **two owner picks deep** so the wait rule and board share one estimate | R20 |
+| R31 | Reach model | Managers reach up to **15 picks** of ADP; centre on each manager's observed mean, widen on unfilled need | §7 |
+| R32 | Draft setup | Setup screen writes `state/draft_setup.json` (order, owner slot, targets, ADP source, toggles, TE1 fork player). **No rebuild needed** | R3 |
+| R33 | Toggle location | `config.LAYERS` stays the only definition; setup screen writes overrides; UI must show which layers are off | R14, §4.2 |
+| R34 | UI fidelity | Match `Draft_Cockpit_v2_dc.html` within Streamlit. **No hosted frontend before the draft**; no Community Cloud (ephemeral state) | — |
+| R35 | Kickers | Round 14 floor via the slide; add K rows with ADP only, excluded from VORP and routes | R22 |
+| R36 | Availability method | Score lognormal vs Monte Carlo on the **decision band (0.15–0.85)**; >25% apart → use the better one, else 50/50 blend | R19, R20 |
 
 ---
 

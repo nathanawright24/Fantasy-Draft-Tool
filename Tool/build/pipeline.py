@@ -471,9 +471,8 @@ def parse_player_intel(report: JoinReport) -> pd.DataFrame:
     if "note" not in df.columns:
         df["note"] = ""
 
-    allowed_tags = set(config.INTEL_TAG_SIGN) | config.INTEL_FILTER_TAGS
-    for bad_tag in sorted(set(df["tag"]) - allowed_tags):
-        report.fail(f"player_intel: unrecognized tag '{bad_tag}' -- expected one of {sorted(allowed_tags)}")
+    for bad_tag in sorted(set(df["tag"]) - config.INTEL_VALID_TAGS):
+        report.fail(f"player_intel: unrecognized tag '{bad_tag}' -- expected one of {sorted(config.INTEL_VALID_TAGS)}")
 
     keep = df[["name_key", "position", "player", "pick_window", "priority", "tag", "note"]]
     config.DATA_DERIVED.mkdir(parents=True, exist_ok=True)
@@ -668,6 +667,35 @@ def _dedupe_intel_for_master(intel_df: pd.DataFrame, report: JoinReport) -> pd.D
     return pd.DataFrame(rows, columns=["name_key", "position", "intel_tag", "intel_priority", "intel_windows", "intel_note"])
 
 
+def _kicker_rows_from_reference(ref_df: pd.DataFrame, report: JoinReport) -> pd.DataFrame:
+    """Work order 2026-08-24 item 7 (R35): player_master carries zero K rows today
+    (R22 -- no props/factor-grid coverage exists for kickers), so the tool has nothing
+    to recommend at the owner's actual pick 188. Adds K rows sourced from the
+    REFERENCE ADP ingestion only (Sleeper by default) -- name, team, and ADP, nothing
+    else. Every props/factor/bonus/intel column is left NaN by the caller's merge,
+    which is what keeps a kicker out of VORP (draft_engine's replacement-level loop
+    only ever runs over config.POSITIONS, which has no "K") and out of every route
+    (config.ROSTER_TARGET has no "K" key either, so every route filter that reads it
+    already excludes K for free)."""
+    k = ref_df[ref_df["position"] == "K"].drop_duplicates(subset=["name_key"])
+    cols = ["name_key", "position", "player", "nfl_team", "reference_source",
+            "reference_adp_value", "reference_adp_rank", "reference_as_of"]
+    if k.empty:
+        report.note("kickers: reference ADP source has no K rows -- no kicker rows added to player_master")
+        return pd.DataFrame(columns=cols)
+    out = pd.DataFrame({
+        "name_key": k["name_key"], "position": "K", "player": k["player_display"],
+        "nfl_team": k["nfl_team"], "reference_source": k["source"],
+        "reference_adp_value": k["adp_value"], "reference_adp_rank": k["adp_rank"],
+        "reference_as_of": k["as_of"],
+    }).reset_index(drop=True)
+    report.note(
+        f"kickers: {len(out)} K rows added from {k['source'].iloc[0]} ADP, no props/factor-grid "
+        f"coverage by design (R22) -- excluded from VORP and every route by construction"
+    )
+    return out
+
+
 def build_player_master(
     props_all: pd.DataFrame,
     priors_all: pd.DataFrame,
@@ -743,6 +771,10 @@ def build_player_master(
     merged.loc[merged["join_coverage"] == "priors_only", "data_quality_note"] += (
         "no implied-props row, ppr_base is blank; "
     )
+
+    kicker_rows = _kicker_rows_from_reference(ref_df, report)
+    if len(kicker_rows):
+        merged = pd.concat([merged, kicker_rows], ignore_index=True)
 
     for col in CORE_COLUMN_ORDER:
         if col not in merged.columns:

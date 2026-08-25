@@ -26,11 +26,36 @@ TOOL_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOL_ROOT))
 sys.path.insert(0, str(TOOL_ROOT / "app"))
 
+import board_model as bm  # noqa: E402
 import config  # noqa: E402
 import draft_engine as de  # noqa: E402
+import draft_setup  # noqa: E402
 import draft_state  # noqa: E402
 from build import pipeline  # noqa: E402
 import backtest  # noqa: E402
+
+
+@pytest.fixture
+def restore_config_singletons():
+    """draft_setup.apply_setup mutates config's module-level state IN PLACE by design
+    (see its own docstring) -- exactly what work order 2026-08-24 item 4 needs, and
+    exactly what would leak into every other test in this file if left unrestored."""
+    saved_order = list(config.DRAFT_ORDER_2026)
+    saved_owner = config.OWNER
+    saved_roster_target = dict(config.ROSTER_TARGET)
+    saved_reference_adp = dict(config.REFERENCE_ADP)
+    saved_layers = {k: dict(v) for k, v in config.LAYERS.items()}
+    try:
+        yield
+    finally:
+        config.DRAFT_ORDER_2026[:] = saved_order
+        config.OWNER = saved_owner
+        config.ROSTER_TARGET.clear()
+        config.ROSTER_TARGET.update(saved_roster_target)
+        config.REFERENCE_ADP.clear()
+        config.REFERENCE_ADP.update(saved_reference_adp)
+        for k, v in saved_layers.items():
+            config.LAYERS[k].update(v)
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +181,10 @@ def test_player_master_has_no_unmapped_teams(built):
 
 def test_player_master_positions_are_all_valid(built):
     master, _ = built
-    assert set(master["position"].unique()) <= set(config.POSITIONS)
+    # "K" is a deliberate exception (work order 2026-08-24 item 7 / R35): ADP-only
+    # kicker rows with no props/factor-grid coverage, added specifically so the tool
+    # can recommend one at pick 188 -- not a join-integrity gap.
+    assert set(master["position"].unique()) <= set(config.POSITIONS) | {"K"}
 
 
 def test_player_master_ppr_base_present_for_most_rows(built):
@@ -370,10 +398,29 @@ def test_backtest_smoke(built):
     results, notes = backtest.run_backtest(n_sims=50, seed=0)
     assert notes  # every season should produce at least a coverage note
     assert not results.empty
-    assert set(results.columns) == {"season", "as_of_pick", "target_pick", "position", "predicted", "actual"}
-    assert results["predicted"].between(0, 1).all()
+    assert set(results.columns) == {
+        "season", "as_of_pick", "target_pick", "position",
+        "predicted_montecarlo", "predicted_lognormal", "predicted_blend", "actual",
+    }
+    for col in ("predicted_montecarlo", "predicted_lognormal", "predicted_blend"):
+        assert results[col].between(0, 1).all()
     assert results["actual"].isin([0.0, 1.0]).all()
     assert set(results["position"]) <= set(config.POSITIONS)
+
+
+def test_backtest_scores_all_three_methods_on_the_identical_observation_set(built):
+    # Work order 2026-08-24 item 1 / R36: the bake-off's whole premise is that all three
+    # methods are scored on the SAME rows, so the comparison is apples to apples.
+    results, _ = backtest.run_backtest(n_sims=50, seed=0)
+    scores = backtest.score_methods(results)
+    assert set(scores) == set(backtest.METHODS)
+    for method in backtest.METHODS:
+        assert scores[method]["decision_band_n"] <= len(results)
+        assert 0.0 <= scores[method]["overall_brier"] <= 1.0
+
+    chosen, reason = backtest.decide_availability_method(scores)
+    assert chosen in ("montecarlo", "lognormal", "blend")
+    assert reason  # the branch that fired must always be stated, not just the choice
 
 
 # ---------------------------------------------------------------------------
@@ -605,3 +652,397 @@ def test_active_draft_id_pointer_survives_a_reload(tmp_path, monkeypatch):
     assert draft_state.load_active_draft_id() == "draft_A"
     draft_state.save_active_draft_id(None)
     assert draft_state.load_active_draft_id() is None
+
+
+# ---------------------------------------------------------------------------
+# 10. Work order 2026-08-24 items 1-3 -- these all live in
+#     simulate_intervening_picks/compute_availability, so they're tested together.
+# ---------------------------------------------------------------------------
+def _toy_te_pool():
+    """A small, hand-built pool: a scarce-TE window at pick 44->53 with two TE-hungry
+    managers, cheap enough to run at n_sims in the hundreds rather than thousands."""
+    rows = []
+    for i in range(6):
+        rows.append({"player": f"TE{i}", "position": "TE", "reference_adp_rank": 40.0 + i * 3,
+                     "comparison_adp_value": 40.0 + i * 3, "comparison_adp_min": 25.0, "comparison_adp_max": 70.0,
+                     "comparison_adp_n": 30.0, "vorp": 20.0 - i * 2, "nfl_team": "FA", "college": None})
+    for i in range(20):
+        rows.append({"player": f"WR{i}", "position": "WR", "reference_adp_rank": 30.0 + i * 2,
+                     "comparison_adp_value": 30.0 + i * 2, "comparison_adp_min": 15.0, "comparison_adp_max": 60.0,
+                     "comparison_adp_n": 30.0, "vorp": 10.0 - i * 0.5, "nfl_team": "FA", "college": None})
+    return pd.DataFrame(rows)
+
+
+def _toy_manager_priors(managers):
+    return pd.DataFrame({
+        "manager": managers, "n_main_drafts": [4] * len(managers), "n_alt_drafts": [0] * len(managers),
+        "confidence": ["high"] * len(managers), "bimodal_flag": [False] * len(managers),
+        "qb1_round_mean": [6.0] * len(managers), "qb1_round_std": [2.0] * len(managers),
+        "te1_round_mean": [8.0] * len(managers), "te1_round_std": [2.0] * len(managers),
+        "rb_in_r1_8_mean": [3.0] * len(managers), "wr_in_r1_8_mean": [3.0] * len(managers),
+        "k_round_mean": [14.0] * len(managers),
+    })
+
+
+def test_checkpoint_capacity_invariant_is_exact_at_both_depths():
+    # Item 2 / R30's acceptance check, on the mechanism itself rather than the
+    # display-clipped column: the discrete-removal guarantee is exact (not just
+    # within a tolerance) at EVERY checkpoint requested from one simulation pass, not
+    # just the final one.
+    pool = _toy_te_pool()
+    intervening = [
+        (45, 4, "Nick"), (46, 4, "Tyler"), (47, 4, "Cailen"), (48, 4, "Dylan"),
+        (49, 5, "Dylan"), (50, 5, "Cailen"), (51, 5, "Tyler"), (52, 5, "Nick"),
+        (54, 6, "Nick"), (55, 6, "Tyler"), (56, 6, "Cailen"), (57, 6, "Dylan"),
+        (58, 6, "Dylan"),
+    ]
+    k_at_53 = sum(1 for o, _, __ in intervening if o < 53)
+    k_at_68 = len(intervening)
+    priors = _toy_manager_priors(["Nick", "Tyler", "Cailen", "Dylan"])
+    team_bias = pd.DataFrame(columns=["manager", "nfl_team", "bias_ratio"])
+
+    result = de.simulate_intervening_picks(
+        pool, intervening, priors, team_bias, {}, n_sims=500, rng=np.random.default_rng(3),
+        checkpoint_picks=[53, 68],
+    )
+    assert set(result) == {53, 68}
+    assert (1 - result[53]).sum() == pytest.approx(k_at_53, abs=1e-9)
+    assert (1 - result[68]).sum() == pytest.approx(k_at_68, abs=1e-9)
+    # Survival can only fall (or hold) as the horizon extends further out.
+    assert (result[68] <= result[53] + 1e-9).all()
+
+
+def test_wait_pick_and_target_pick_share_one_simulation():
+    # Item 2 / R30: before this, the board's number and the wait rule's number came
+    # from different methods (Monte Carlo vs the fitted lognormal) whenever the owner
+    # wasn't on the clock. compute_availability(wait_pick=...) must produce both from
+    # the SAME simulate_intervening_picks call.
+    pool = _toy_te_pool()
+    priors = _toy_manager_priors(["Nick", "Tyler", "Cailen", "Dylan"])
+    team_bias = pd.DataFrame(columns=["manager", "nfl_team", "bias_ratio"])
+    board = pool.copy()
+    board["name_key"] = board["player"].str.lower()
+
+    calls = []
+    real_simulate = de.simulate_intervening_picks
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("checkpoint_picks"))
+        return real_simulate(*args, **kwargs)
+
+    orig = de.simulate_intervening_picks
+    de.simulate_intervening_picks = spy
+    try:
+        out = de.compute_availability(
+            board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+            n_sims=300, rng=np.random.default_rng(2), wait_pick=68, method="montecarlo",
+        )
+    finally:
+        de.simulate_intervening_picks = orig
+
+    assert calls == [[53, 68]]  # exactly one simulation call, checkpointed at both picks
+    assert "survival_probability_wait" in out.columns
+    assert (out["survival_probability_wait"] <= out["survival_probability"] + 1e-9).all()
+
+
+def test_wait_pick_must_be_after_target_pick():
+    pool = _toy_te_pool()
+    board = pool.copy()
+    board["name_key"] = board["player"].str.lower()
+    priors = _toy_manager_priors(["Nick"])
+    team_bias = pd.DataFrame(columns=["manager", "nfl_team", "bias_ratio"])
+    with pytest.raises(ValueError):
+        de.compute_availability(
+            board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+            wait_pick=53, n_sims=50,
+        )
+
+
+@pytest.mark.parametrize("method", ["montecarlo", "lognormal", "blend"])
+def test_availability_method_toggle_changes_which_estimate_ships(built, method):
+    # Item 1 / R36: AVAILABILITY_METHOD must be a real toggle, not documentation of a
+    # hard-coded choice -- mirrors test_survival_anchor_is_a_real_config_toggle's shape.
+    master, _ = built
+    board = de.compute_composite(master)
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+
+    out = de.compute_availability(
+        board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+        n_sims=200, rng=np.random.default_rng(7), method=method,
+    )
+    assert out["survival_probability"].between(0, 1).all()
+    if method == "lognormal":
+        pd.testing.assert_series_equal(
+            out["survival_probability"], out["survival_baseline"], check_names=False
+        )
+
+
+def test_lognormal_method_never_calls_the_simulation():
+    # "lognormal" exists specifically so the backtest's lognormal arm (and anyone else
+    # who wants the cheap estimate) can skip the Monte Carlo outright, not just ignore
+    # its result after paying for it.
+    pool = _toy_te_pool()
+    board = pool.copy()
+    board["name_key"] = board["player"].str.lower()
+    priors = _toy_manager_priors(["Nick", "Tyler"])
+    team_bias = pd.DataFrame(columns=["manager", "nfl_team", "bias_ratio"])
+
+    def explode(*args, **kwargs):
+        raise AssertionError("simulate_intervening_picks must not be called for method='lognormal'")
+
+    orig = de.simulate_intervening_picks
+    de.simulate_intervening_picks = explode
+    try:
+        out = de.compute_availability(
+            board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+            method="lognormal", n_sims=50,
+        )
+    finally:
+        de.simulate_intervening_picks = orig
+    assert out["survival_probability"].between(0, 1).all()
+
+
+def test_reach_is_per_manager_not_a_league_wide_constant():
+    # R31 is explicit: "these are real per-manager numbers; do not use a league-wide
+    # constant." Confirm the config data itself varies and that the draw tracks it.
+    assert len(set(config.MANAGER_MEAN_REACH.values())) > 1
+    rng = np.random.default_rng(0)
+    aggressive = np.mean(de._reach_draws(rng, 4000, "Dylan", widen=False))  # mean reach +4.0
+    patient = np.mean(de._reach_draws(rng, 4000, "Cailen", widen=False))  # mean reach -3.8
+    assert aggressive > patient + 3.0
+
+
+def test_reach_widens_on_unfilled_need_at_a_thinning_position():
+    rng = np.random.default_rng(0)
+    baseline = np.mean(de._reach_draws(rng, 4000, "Dylan", widen=False))
+    widened = np.mean(de._reach_draws(rng, 4000, "Dylan", widen=True))
+    assert widened > baseline  # widen shifts the mean up, i.e. reaches further/more often
+    draws = de._reach_draws(np.random.default_rng(0), 4000, "Dylan", widen=True)
+    assert draws.max() <= config.REACH_MAX_PICKS + 1e-9
+    assert draws.min() >= -config.REACH_MAX_PICKS - 1e-9
+
+
+def test_thinning_counts_startable_players_not_every_row():
+    # A position with plenty of deep-bench rows but almost no startable (vorp > 0)
+    # ones must register as thinning -- counting every row never fires inside a
+    # realistic in-draft window (player_master carries 70+ TE rows including scrubs).
+    thin_pool = pd.DataFrame({
+        "position": ["TE"] * 40,
+        "vorp": [5.0, 3.0] + [-20.0] * 38,  # only 2 startable TEs left
+    })
+    assert de._position_is_thinning(thin_pool, "TE") is True
+    deep_pool = pd.DataFrame({
+        "position": ["WR"] * 40,
+        "vorp": [20.0] * 20 + [-5.0] * 20,  # 20 startable WRs left -- not scarce
+    })
+    assert de._position_is_thinning(deep_pool, "WR") is False
+
+
+def test_laporta_survival_falls_with_the_reach_model_on(built):
+    # Item 3 / R31's own acceptance check: LaPorta's survival 44 -> 53 should FALL once
+    # reach (and its need/thinning widening) is modeled, because the TE-hungry managers
+    # in that exact window now sometimes reach for him early rather than drafting
+    # strictly off the ADP-implied hazard curve.
+    master, _ = built
+    board = de.compute_composite(master)
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    seq = config.full_draft_sequence()
+    intervening = [(o, r, m) for o, r, m in seq if 44 < o < 53 and m != config.OWNER]
+    laporta = board[board["player"] == "Sam LaPorta"]
+    if laporta.empty:
+        pytest.skip("Sam LaPorta not present in this season's player_master.csv")
+    pool = board[board["position"].isin(config.POSITIONS)]
+    laporta_pos = pool.index.get_loc(laporta.index[0])
+    # Managers in this window still need a TE, matching the handoff's framing of this
+    # exact window ("the league's three most tight end hungry managers").
+    needy = {m: {} for _, __, m in intervening}
+
+    def laporta_survival():
+        result = de.simulate_intervening_picks(
+            pool, intervening, priors, team_bias, needy, n_sims=1500, rng=np.random.default_rng(5)
+        )
+        return result[laporta_pos]
+
+    with_reach = laporta_survival()
+
+    saved_mean = dict(config.MANAGER_MEAN_REACH)
+    saved_std, saved_bonus, saved_mult = (
+        config.REACH_STD_BASE, config.REACH_NEED_WIDEN_MEAN_BONUS, config.REACH_NEED_WIDEN_STD_MULT,
+    )
+    try:
+        config.MANAGER_MEAN_REACH = {k: 0.0 for k in saved_mean}
+        config.REACH_STD_BASE = 1e-9
+        config.REACH_NEED_WIDEN_MEAN_BONUS = 0.0
+        config.REACH_NEED_WIDEN_STD_MULT = 1.0
+        without_reach = laporta_survival()
+    finally:
+        config.MANAGER_MEAN_REACH = saved_mean
+        config.REACH_STD_BASE, config.REACH_NEED_WIDEN_MEAN_BONUS, config.REACH_NEED_WIDEN_STD_MULT = (
+            saved_std, saved_bonus, saved_mult,
+        )
+
+    assert with_reach < without_reach
+
+
+
+# ---------------------------------------------------------------------------
+# 11. Work order 2026-08-24 items 4-5: draft setup screen (R32) and layer toggles
+#     with config.LAYERS as the only definition (R33).
+# ---------------------------------------------------------------------------
+def test_validate_draft_order_accepts_a_permutation_and_rejects_anything_else():
+    names = ["A", "B", "C"]
+    assert draft_setup.validate_draft_order(["C", "A", "B"], names) is None
+    assert draft_setup.validate_draft_order(["A", "B"], names) is not None  # too few
+    assert draft_setup.validate_draft_order(["A", "A", "B"], names) is not None  # duplicate
+    assert draft_setup.validate_draft_order(["A", "B", "Z"], names) is not None  # unrecognized
+
+
+def test_layers_off_lists_only_disabled_layers():
+    setup = {"layers": {"bonus_model": True, "college_bias": False, "player_intel": False}}
+    assert draft_setup.layers_off(setup) == ["college_bias", "player_intel"]
+    assert draft_setup.layers_off({"layers": {}}) == []
+
+
+def test_apply_setup_changes_owner_slot_and_every_downstream_pick_number(restore_config_singletons):
+    # Item 4 / R32's own acceptance check: changing the owner slot must update every
+    # pick number and all availability with NO rebuild -- verified here by mutating
+    # config in place and reading straight back through the same functions the live
+    # app calls, with no re-import and no re-run of build/pipeline.py.
+    setup = draft_setup.default_setup()
+    original_first_window = config.owner_pick_windows()[0]["overall"]
+
+    new_order = list(setup["draft_order"])
+    i_a, i_b = new_order.index("Dylan"), new_order.index("Nathan")
+    new_order[i_a], new_order[i_b] = new_order[i_b], new_order[i_a]  # Nathan now slot 1
+    setup["draft_order"] = new_order
+    setup["owner"] = "Nathan"
+
+    draft_setup.apply_setup(setup)
+
+    assert config.DRAFT_ORDER_2026[0] == "Nathan"
+    assert config.OWNER == "Nathan"
+    new_first_window = config.owner_pick_windows()[0]["overall"]
+    assert new_first_window != original_first_window
+    assert new_first_window == 1  # slot 1 means overall pick 1, not 5
+
+
+def test_apply_setup_changes_roster_target_and_layers_live(restore_config_singletons):
+    setup = draft_setup.default_setup()
+    setup["roster_target"] = {"QB": 3, "RB": 4, "WR": 6, "TE": 2}
+    setup["layers"]["college_bias"] = False
+    draft_setup.apply_setup(setup)
+
+    assert config.ROSTER_TARGET == {"QB": 3, "RB": 4, "WR": 6, "TE": 2}
+    assert config.layer_on("college_bias") is False
+    # A default bound to config.ROSTER_TARGET at another module's import time (e.g.
+    # board_model.build_route's `remaining = {... for pos, cap in config.ROSTER_TARGET...}`)
+    # reads the dict live inside the function body, not a frozen copy -- confirm the
+    # object identity itself never changed, only its contents (the in-place mutation
+    # apply_setup relies on).
+    assert config.ROSTER_TARGET is not None
+
+
+def test_setup_screen_gates_a_fresh_state_directory(tmp_path, monkeypatch):
+    # Item 4's other acceptance check: a fresh state/ directory (no draft_setup.json)
+    # must boot to the setup screen rather than crashing or silently using stale config.
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    assert not draft_setup.setup_exists()
+    default = draft_setup.default_setup()
+    assert len(default["draft_order"]) == config.N_TEAMS
+    assert default["owner"] in default["draft_order"]
+
+
+def test_save_setup_round_trips_and_applies(tmp_path, monkeypatch, restore_config_singletons):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    setup = draft_setup.default_setup()
+    setup["te1_fork_player"] = "Someone Else"
+    draft_setup.save_setup(setup)
+
+    assert draft_setup.setup_exists()
+    reloaded = draft_setup.load_setup()
+    assert reloaded["te1_fork_player"] == "Someone Else"
+    assert draft_setup.te1_fork_player(reloaded) == "Someone Else"
+
+
+def test_availability_method_is_montecarlo_not_blend(built):
+    # 2026-08-24 owner decision: the bake-off's letter-of-the-rule result (blend) was
+    # overridden because blend is not capacity-safe (R20/R21) and scored worse than
+    # montecarlo alone on the decision-band Brier. Guards against silently drifting
+    # back to "blend" (e.g. a careless re-run of the bake-off overwriting the comment
+    # without re-litigating the capacity tradeoff).
+    assert config.AVAILABILITY_METHOD == "montecarlo"
+
+
+# ---------------------------------------------------------------------------
+# 12. Work order 2026-08-24 item 7: kickers (R35). player_master now carries ADP-only
+#     K rows; they must stay out of VORP and every route, and the recommender should
+#     surface exactly one, only from round 14 on.
+# ---------------------------------------------------------------------------
+def test_kicker_rows_are_added_from_the_reference_adp_source(built):
+    master, _ = built
+    kickers = master[master["position"] == "K"]
+    assert len(kickers) > 0
+    assert kickers["reference_adp_rank"].notna().all()
+    assert kickers["ppr_base"].isna().all()  # no props coverage by design (R22)
+
+
+def test_kicker_rows_are_excluded_from_vorp(built):
+    master, _ = built
+    board = de.compute_composite(master)
+    kickers = board[board["position"] == "K"]
+    assert (kickers["vorp"].fillna(0) == 0).all()
+
+
+def test_kicker_rows_never_appear_in_a_route(built):
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    routes = bm.build_routes(board, {}, this_pick=140, on_clock=True, n_routes=3)
+    for route in routes:
+        assert route["anchor"]["position"] != "K"
+        assert all(leg["position"] != "K" for leg in route["legs"])
+
+
+def test_kicker_slide_moves_kickers_to_round_14_in_their_own_order_not_the_skill_shift(built):
+    master, _ = built
+    slid = bm.apply_kicker_slide(master)
+    kickers = slid[slid["position"] == "K"].sort_values("reference_adp_rank_raw")
+    assert (kickers["reference_adp_rank"] >= bm.ROUND_14_FIRST_PICK).all()
+    # Strictly increasing in the same order as their raw ADP -- the slide reorders
+    # skill players around kickers, it does not reorder kickers among themselves.
+    assert kickers["reference_adp_rank"].is_monotonic_increasing
+    assert slid.attrs["kickers_reranked_count"] > 0
+
+
+def test_exactly_one_kicker_suggested_at_pick_188_and_none_before_round_14(built):
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+
+    early = de.RosterState(current_round=10, current_overall_pick=125)
+    recs_early = de.top_recommendations(board, early, n=50)
+    assert (recs_early["position"] == "K").sum() == 0
+
+    late = de.RosterState(current_round=16, current_overall_pick=188)
+    recs_late = de.top_recommendations(board, late, n=50)
+    assert (recs_late["position"] == "K").sum() == 1
+
+
+def test_sleeper_draft_id_setup_field_round_trips():
+    setup = draft_setup.default_setup()
+    assert draft_setup.sleeper_draft_id(setup) is None
+    setup["sleeper_draft_id"] = "  1234567890  "
+    assert draft_setup.sleeper_draft_id({"sleeper_draft_id": "1234567890"}) == "1234567890"
+    assert draft_setup.sleeper_draft_id({"sleeper_draft_id": "   "}) is None
+    assert draft_setup.sleeper_draft_id({"sleeper_draft_id": None}) is None
+
+
+def test_kicker_suggestion_withheld_once_owner_already_has_one(built):
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    roster = de.RosterState(
+        picks=[{"player": "Brandon Aubrey", "position": "K", "round": 14, "overall": 157}],
+        current_round=16, current_overall_pick=188,
+    )
+    recs = de.top_recommendations(board, roster, n=50)
+    assert (recs["position"] == "K").sum() == 0

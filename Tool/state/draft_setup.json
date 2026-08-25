@@ -1,0 +1,38 @@
+{
+  "draft_order": [
+    "Dylan",
+    "Cailen",
+    "Tyler",
+    "Nick",
+    "Nathan",
+    "Asa",
+    "Greg",
+    "Ryan",
+    "Jayden",
+    "Colin",
+    "Joseph",
+    "Kaiden"
+  ],
+  "owner": "Nathan",
+  "roster_target": {
+    "QB": 2,
+    "RB": 5,
+    "WR": 6,
+    "TE": 2
+  },
+  "reference_source_name": "Sleeper",
+  "reference_is_sleeper": true,
+  "layers": {
+    "implied_props": true,
+    "factor_grids": true,
+    "bonus_model": true,
+    "oline_rankings": true,
+    "manager_priors": true,
+    "nfl_team_bias": true,
+    "college_bias": true,
+    "archetype_priors": true,
+    "player_intel": true
+  },
+  "te1_fork_player": "Sam LaPorta",
+  "sleeper_draft_id": "1397772314552066048"
+}

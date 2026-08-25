@@ -357,7 +357,14 @@ def _pick_hazard_vector(pool_size: int, overall_pick: int, mu_arr, sigma_arr, ha
     player in the pool at once -- the ADP-position term the Monte Carlo softmax weights
     on (spec 12.3: 'sampled from a softmax over available players weighted by ADP
     position'). Fitted-lognormal players and generic-fallback players are each handled
-    with one vectorized scipy call rather than a per-player Python loop."""
+    with one vectorized scipy call rather than a per-player Python loop.
+
+    Single-pick-number version -- still used by the UI's route builder
+    (board_model.candidates_for_pick), which needs a cheap point estimate at many
+    speculative future picks and deliberately does not carry the reach model (work
+    order 2026-08-24 item 3 scopes the reach model to the live wait/board number, not
+    three-picks-deep route speculation). `_hazard_matrix_for_subset` below is the
+    reach-aware, per-simulation version used inside simulate_intervening_picks."""
     hz = np.zeros(pool_size)
     x = max(overall_pick, 1e-6)
     if has_fit.any():
@@ -374,6 +381,115 @@ def _pick_hazard_vector(pool_size: int, overall_pick: int, mu_arr, sigma_arr, ha
         out[has_rank] = pdf / sf
         hz[generic] = out
     return np.clip(hz, 1e-9, 50.0)
+
+
+def _hazard_matrix_for_subset(effective_picks: np.ndarray, mu_sub, sigma_sub, has_fit_sub, rank_sub) -> np.ndarray:
+    """Same hazard as `_pick_hazard_vector`, but for a SUBSET of the pool (one
+    position's players) and with one effective pick number PER SIMULATION RUN rather
+    than a single shared one -- `effective_picks` has shape (n_sims,), already shifted
+    by that pick's reach draw (work order 2026-08-24 item 3, R31). Returns
+    (n_sims, len(mu_sub)). Broadcasting the (n_sims, 1) pick column against the
+    (1, n_sub) per-player fit arrays is what makes 2000 simulations cost one vectorized
+    scipy call instead of 2000 Python-level ones."""
+    n_sims = len(effective_picks)
+    n_sub = len(mu_sub)
+    hz = np.zeros((n_sims, n_sub))
+    if n_sub == 0:
+        return hz
+    x = np.clip(effective_picks, 1e-6, None)[:, None]
+    if has_fit_sub.any():
+        s = sigma_sub[has_fit_sub][None, :]
+        scale = np.exp(mu_sub[has_fit_sub])[None, :]
+        sf = np.clip(lognorm.sf(x, s=s, scale=scale), 1e-9, None)
+        pdf = lognorm.pdf(x, s=s, scale=scale)
+        hz[:, has_fit_sub] = pdf / sf
+    generic = ~has_fit_sub
+    if generic.any():
+        rk = rank_sub[generic]
+        has_rank = ~np.isnan(rk)
+        out = np.full((n_sims, int(generic.sum())), 1.0 / (config.N_TEAMS * config.N_ROUNDS))
+        if has_rank.any():
+            loc = rk[has_rank][None, :]
+            sf = np.clip(norm.sf(x, loc=loc, scale=config.GENERIC_ADP_SPREAD_PICKS), 1e-9, None)
+            pdf = norm.pdf(x, loc=loc, scale=config.GENERIC_ADP_SPREAD_PICKS)
+            out[:, has_rank] = pdf / sf
+        hz[:, generic] = out
+    return np.clip(hz, 1e-9, 50.0)
+
+
+def _manager_has_unfilled_need(owner_roster_by_manager: dict, manager: str, pos: str) -> bool:
+    have = owner_roster_by_manager.get(manager, {}).get(pos, 0)
+    return have < config.ROSTER_TARGET.get(pos, 0)
+
+
+def _reach_draws(rng: np.random.Generator, n_sims: int, manager: str, widen: bool) -> np.ndarray:
+    """Per-simulation reach draws (picks) for one manager at one pick, in one position
+    group. Centered on that manager's own observed mean reach (config.MANAGER_MEAN_REACH,
+    transcribed from league-draft-tendencies-2026.md, NOT a league-wide constant -- R31
+    is explicit that using one would defeat the point). `widen=True` (manager still
+    needs this position AND it is thinning in the pool -- see `_position_is_thinning`)
+    shifts the mean up and spreads the tail further, which is the mechanism that
+    produces a manager reaching hard for, e.g., the last plausible tight end."""
+    mean_r = config.MANAGER_MEAN_REACH.get(manager, 0.0)
+    std_r = config.REACH_STD_BASE
+    if widen:
+        mean_r += config.REACH_NEED_WIDEN_MEAN_BONUS
+        std_r *= config.REACH_NEED_WIDEN_STD_MULT
+    draws = rng.normal(mean_r, std_r, size=n_sims)
+    return np.clip(draws, -config.REACH_MAX_PICKS, config.REACH_MAX_PICKS)
+
+
+def _position_is_thinning(pool: pd.DataFrame, pos: str) -> bool:
+    """Evaluated ONCE per intervening-pick window from the pool's STATIC composition at
+    window entry, not re-checked after every simulated removal. A first-order heuristic
+    (like `_position_pick_rate` above) -- re-deriving it at every one of 2000 sims x up
+    to 14 picks would multiply the per-call cost for a refinement this coarse, and the
+    window is short enough (8-14 picks) that the pool's shape doesn't move much within
+    it.
+
+    Counts only STARTABLE players (`vorp > 0`), not every row at the position --
+    player_master carries deep bench chaff at every position (70+ TE rows), so a raw row
+    count never registers as scarce inside a realistic in-draft window even when the
+    tier anyone would actually roster genuinely has."""
+    sub = pool[pool["position"] == pos]
+    if "vorp" not in sub.columns:
+        return len(sub) <= config.THINNING_POOL_THRESHOLD.get(pos, 0)
+    return int((sub["vorp"] > 0).sum()) <= config.THINNING_POOL_THRESHOLD.get(pos, 0)
+
+
+def _pick_weight_matrix(
+    n_sims: int,
+    overall_pick: int,
+    manager: str,
+    pos_codes: np.ndarray,
+    mu_arr: np.ndarray,
+    sigma_arr: np.ndarray,
+    has_fit: np.ndarray,
+    rank_arr: np.ndarray,
+    thinning: dict[str, bool],
+    owner_roster_by_manager: dict,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """(n_sims, pool_size) reach-aware hazard for one intervening pick -- one position
+    group at a time, because the reach draw (and whether it widens) is a property of
+    (manager, position), not of the pick as a whole."""
+    n = len(pos_codes)
+    hz = np.zeros((n_sims, n))
+    pos_index = {p: i for i, p in enumerate(config.POSITIONS)}
+    for pos in config.POSITIONS:
+        pmask = pos_codes == pos_index[pos]
+        if not pmask.any():
+            continue
+        widen = thinning.get(pos, False) and _manager_has_unfilled_need(owner_roster_by_manager, manager, pos)
+        draws = _reach_draws(rng, n_sims, manager, widen)
+        eff = overall_pick + draws
+        hz[:, pmask] = _hazard_matrix_for_subset(eff, mu_arr[pmask], sigma_arr[pmask], has_fit[pmask], rank_arr[pmask])
+    other = pos_codes == -1  # defensive: pool is normally pre-filtered to config.POSITIONS
+    if other.any():
+        draws = _reach_draws(rng, n_sims, manager, False)
+        eff = overall_pick + draws
+        hz[:, other] = _hazard_matrix_for_subset(eff, mu_arr[other], sigma_arr[other], has_fit[other], rank_arr[other])
+    return hz
 
 
 def _confidence_widen(row: pd.Series) -> float:
@@ -466,15 +582,17 @@ def simulate_intervening_picks(
     manager_priors: pd.DataFrame,
     team_bias: pd.DataFrame,
     owner_roster_by_manager: dict[str, dict[str, int]],
-    owner: str = config.OWNER,
+    owner: str | None = None,
     n_sims: int = config.AVAILABILITY_N_SIMS,
     rng: np.random.Generator | None = None,
-) -> np.ndarray:
+    checkpoint_picks: list[int] | None = None,
+) -> np.ndarray | dict[int, np.ndarray]:
     """Monte Carlo capacity constraint (spec 12.3, R20/R21): discretely simulates every
     intervening pick so exactly k players leave in k picks, by construction -- fixing
     the marginal model's "159 players expected gone in 8 picks" defect. Each pick is
     drawn from a softmax over the still-available pool, weighted by that player's own
-    ADP-implied hazard (R19's curve, at that exact pick number) x the picking manager's
+    ADP-implied hazard (R19's curve, at an EFFECTIVE pick number reach-shifted per work
+    order 2026-08-24 item 3 / R31 -- see `_pick_weight_matrix`) x the picking manager's
     positional appetite at that round vs. league average x team/college bias. Because
     every pick removes a real player from the SAME shared pool, substitution is free:
     if a simulated draw takes McBride, every other TE's odds improve in that draw and
@@ -484,12 +602,25 @@ def simulate_intervening_picks(
     `intervening` is `[(overall_pick, round, manager), ...]` for every pick strictly
     between the current state and the target, in order (each manager appears once per
     pick they make -- twice within one owner-to-owner window, per the fixed-window
-    property). Returns survival fraction per row of `pool`, in `pool`'s original order.
+    property).
+
+    Without `checkpoint_picks`: returns survival fraction per row of `pool`, in `pool`'s
+    original order, exactly as before (every caller from before 2026-08-24 keeps working
+    unchanged). With `checkpoint_picks` (a list of overall-pick numbers, e.g. the owner's
+    next TWO turns): returns `{checkpoint_pick: survival_array, ...}`, one array per
+    checkpoint, from a SINGLE pass of simulation -- this is what lets the board's primary
+    number and the wait rule's "does he last one more turn" number come from the same
+    simulated draws instead of disagreeing (work order 2026-08-24 item 2 / R30). A
+    checkpoint's survival is measured immediately before the first intervening pick at or
+    after it, i.e. "still there when that pick number comes up."
     """
     rng = rng or np.random.default_rng()
+    owner = owner if owner is not None else config.OWNER  # see config.owner_pick_windows's docstring for why
     n = len(pool)
+    checkpoints = sorted(set(checkpoint_picks)) if checkpoint_picks else None
     if n == 0 or not intervening:
-        return np.ones(n)
+        ones = np.ones(n)
+        return {p: ones for p in checkpoints} if checkpoints else ones
 
     positions = pool["position"].to_numpy()
     pos_index = {p: i for i, p in enumerate(config.POSITIONS)}
@@ -505,18 +636,31 @@ def simulate_intervening_picks(
     owner_colleges = config.MANAGER_COLLEGE_AFFINITY if config.layer_on("college_bias") else {}
 
     n_picks = len(intervening)
-    base_weight = np.ones((n_picks, n))
-    # appetite[k, has_already, pos_code] -- the only piece that can vary within a
+    overalls = [ov for ov, _, __ in intervening]
+    # Thinning is a property of the whole window's starting pool, evaluated once (see
+    # `_position_is_thinning`'s docstring), not per pick and not per simulation.
+    thinning = {pos: _position_is_thinning(pool, pos) for pos in config.POSITIONS}
+
+    # weight_matrix[k] is (n_sims, n): a fresh reach draw per simulation per pick, per
+    # the owner's "a distribution, not a point" instruction (R31) -- this is the one
+    # piece that genuinely can't be precomputed as a single (n_picks, n) table the way
+    # the pre-reach-model version could, since the whole point is that the SAME manager
+    # at the SAME pick reaches a different amount across different simulated draws.
+    weight_matrix = np.zeros((n_picks, n_sims, n))
+    # appetite[k, has_already, pos_code] -- the only OTHER piece that varies within a
     # simulation (has_already depends on what THIS manager already took, in-sim).
     appetite = np.ones((n_picks, 2, len(config.POSITIONS)))
     valid_manager = np.zeros(n_picks, dtype=bool)
     bias_cache: dict[str, np.ndarray] = {}
 
     for k, (overall, round_num, manager) in enumerate(intervening):
-        hz = _pick_hazard_vector(n, overall, mu_arr, sigma_arr, has_fit, rank_arr)
         if manager not in bias_cache:
             bias_cache[manager] = _bias_multiplier_array(pool, manager, team_bias_lookup, owner_colleges)
-        base_weight[k] = hz * bias_cache[manager]
+        hz = _pick_weight_matrix(
+            n_sims, overall, manager, pos_codes, mu_arr, sigma_arr, has_fit, rank_arr,
+            thinning, owner_roster_by_manager, rng,
+        )
+        weight_matrix[k] = hz * bias_cache[manager][None, :]
 
         if manager in priors_by_manager.index:
             valid_manager[k] = True
@@ -529,11 +673,24 @@ def simulate_intervening_picks(
                     ratio = manager_rate / league_rate if league_rate > 0 else 1.0
                     appetite[k, int(has_already), pos_index[pos]] = max(1.0 + (ratio - 1.0) / widen, 1e-6)
 
+    # A checkpoint's boundary is "how many intervening picks happen strictly before it" --
+    # recorded the instant the sim loop reaches that many completed picks, so a checkpoint
+    # equal to the window's own end (no intervening pick at or past it) is caught by the
+    # trailing flush after the loop.
+    boundary_at = {p: sum(1 for ov in overalls if ov < p) for p in (checkpoints or [])}
+    checkpoint_counts = {p: np.zeros(n, dtype=np.int64) for p in (checkpoints or [])}
+    ordered_checkpoints = checkpoints or []
+
     survived_count = np.zeros(n, dtype=np.int64)
-    for _ in range(n_sims):
+    for sim_i in range(n_sims):
         available = np.ones(n, dtype=bool)
         has_pos: dict[str, np.ndarray] = {}
+        next_cp = 0
         for k, (overall, round_num, manager) in enumerate(intervening):
+            while next_cp < len(ordered_checkpoints) and boundary_at[ordered_checkpoints[next_cp]] == k:
+                checkpoint_counts[ordered_checkpoints[next_cp]] += available
+                next_cp += 1
+
             idx = np.flatnonzero(available)
             if len(idx) == 0:
                 break
@@ -544,17 +701,22 @@ def simulate_intervening_picks(
                 already = has_pos[manager]
                 pc_idx = pos_codes[idx]
                 mult = np.where(already[np.clip(pc_idx, 0, None)], appetite[k, 1, np.clip(pc_idx, 0, None)], appetite[k, 0, np.clip(pc_idx, 0, None)])
-                w = base_weight[k, idx] * mult
+                w = weight_matrix[k, sim_i, idx] * mult
             else:
-                w = base_weight[k, idx]
+                w = weight_matrix[k, sim_i, idx]
             w = np.clip(w, 1e-12, None)
             choice = rng.choice(idx, p=w / w.sum())
             available[choice] = False
             pc = pos_codes[choice]
             if pc >= 0 and manager in has_pos:
                 has_pos[manager][pc] = True
+        while next_cp < len(ordered_checkpoints):
+            checkpoint_counts[ordered_checkpoints[next_cp]] += available
+            next_cp += 1
         survived_count += available.astype(np.int64)
 
+    if checkpoints:
+        return {p: checkpoint_counts[p] / n_sims for p in checkpoints}
     return survived_count / n_sims
 
 
@@ -566,13 +728,15 @@ def compute_availability(
     team_bias: pd.DataFrame,
     drafted_name_keys: set[str] | None = None,
     owner_roster_by_manager: dict[str, dict[str, int]] | None = None,
-    owner: str = config.OWNER,
+    owner: str | None = None,
     draft_order: list[str] = config.DRAFT_ORDER_2026,
     n_sims: int = config.AVAILABILITY_N_SIMS,
     rng: np.random.Generator | None = None,
+    wait_pick: int | None = None,
+    method: str | None = None,
 ) -> pd.DataFrame:
     """Adds `survival_baseline`, `availability_used_fallback`, and `survival_probability`
-    to a copy of `board`.
+    to a copy of `board` -- plus `survival_probability_wait` when `wait_pick` is given.
 
     `as_of_pick` is the last pick actually made in the live draft (0 if none yet).
     `target_pick` is the pick we want survival probability AT -- normally the owner's
@@ -583,27 +747,51 @@ def compute_availability(
     before target_pick, many intervening managers) -- two different questions that a
     single parameter would silently answer identically.
 
-    Baseline (always computed, every row, regardless of draft state): the R19
+    `wait_pick`, when given (work order 2026-08-24 item 2 / R30), is a SECOND, further
+    checkpoint -- normally the owner's next-but-one turn -- computed from the SAME
+    simulation run as `target_pick` rather than a separate lognormal estimate. This is
+    the fix for the board and the wait rule disagreeing: before this, the wait number
+    fell back to the fitted curve because the Monte Carlo only ever ran out to the
+    owner's next pick, and the curve doesn't carry the substitution logic (spec 12.3)
+    that matters most in a run on a scarce position. `wait_pick` must be > `target_pick`
+    (it extends the same window further, not a different one).
+
+    `method` overrides `config.AVAILABILITY_METHOD` ("montecarlo" | "lognormal" |
+    "blend", work order 2026-08-24 item 1 / R36) for this call; None uses the config
+    default. "lognormal" skips the simulation entirely (faster, and exactly what the
+    backtest's lognormal arm needs); "blend" runs the simulation and averages it with
+    the baseline 50/50.
+
+    Baseline (always computed, every row, regardless of draft state or method): the R19
     lognormal-or-generic curve, conditioned on survival to `as_of_pick`. This baseline
     IS the fallback path -- when manager_priors doesn't apply, this function returns it
     untouched, which is what makes the fallback "built alongside the primary path"
     rather than a separate branch.
 
-    Primary refinement (only when manager_priors applies AND there are intervening
-    picks): `drafted_name_keys` filters `board` down to the pool of players actually
-    still on the clock, and `simulate_intervening_picks` (R20/R21) discretely simulates
-    every pick between `as_of_pick` and `target_pick` from that pool. Rows not in the
-    pool (already drafted, or outside `config.POSITIONS`) get `survival_probability` 0.
+    Primary refinement (only when manager_priors applies, method allows it, AND there
+    are intervening picks): `drafted_name_keys` filters `board` down to the pool of
+    players actually still on the clock, and `simulate_intervening_picks` (R20/R21)
+    discretely simulates every pick between `as_of_pick` and `target_pick` (and
+    `wait_pick`, if given) from that pool. Rows not in the pool (already drafted, or
+    outside `config.POSITIONS`) get `survival_probability` 0.
     """
     df = board.copy()
     owner_roster_by_manager = owner_roster_by_manager or {}
     drafted_name_keys = drafted_name_keys or set()
+    method = method or config.AVAILABILITY_METHOD
+    owner = owner if owner is not None else config.OWNER  # see config.owner_pick_windows's docstring for why
+    if wait_pick is not None and wait_pick <= target_pick:
+        raise ValueError(f"wait_pick ({wait_pick}) must be strictly after target_pick ({target_pick})")
 
-    baseline, anchor = [], []
-    for _, row in df.iterrows():
-        surv, a = _survival_baseline_row(row, as_of_pick, target_pick)
-        baseline.append(surv)
-        anchor.append(a)
+    def _baseline_for(pick: int) -> tuple[list[float], list[str]]:
+        baseline, anchor = [], []
+        for _, row in df.iterrows():
+            surv, a = _survival_baseline_row(row, as_of_pick, pick)
+            baseline.append(surv)
+            anchor.append(a)
+        return baseline, anchor
+
+    baseline, anchor = _baseline_for(target_pick)
     df["survival_baseline"] = baseline
     # "reference" (Sleeper, the normal case) | "comparison" (NFFC, only when Sleeper has
     # no rank for this player) | "none" (neither source had anything) -- work order item
@@ -614,28 +802,56 @@ def compute_availability(
     # certainty in either direction, even when the model's point estimate is extreme.
     df["survival_baseline"] = df["survival_baseline"].clip(0.005, 0.995)
     df["availability_used_fallback"] = False  # whether the manager-priors refinement below applied at all
+    if wait_pick is not None:
+        wait_baseline, _ = _baseline_for(wait_pick)
+        df["survival_baseline_wait"] = pd.Series(wait_baseline).clip(0.005, 0.995).to_numpy()
 
-    if not config.layer_on("manager_priors"):
+    if method == "lognormal" or not config.layer_on("manager_priors"):
         df["survival_probability"] = df["survival_baseline"]
         df["availability_used_fallback"] = True
+        if wait_pick is not None:
+            df["survival_probability_wait"] = df["survival_baseline_wait"]
         return df
 
     seq = config.full_draft_sequence(draft_order)
+    farthest = wait_pick if wait_pick is not None else target_pick
     intervening = [
-        (overall, rnd, mgr) for overall, rnd, mgr in seq if as_of_pick < overall < target_pick and mgr != owner
+        (overall, rnd, mgr) for overall, rnd, mgr in seq if as_of_pick < overall < farthest and mgr != owner
     ]  # spec Section 7: "Exclude Nathan's own priors -- he is not competing with himself"
     if not intervening:
-        df["survival_probability"] = np.where(df["name_key"].isin(drafted_name_keys), 0.0, 1.0)
+        still_here = np.where(df["name_key"].isin(drafted_name_keys), 0.0, 1.0)
+        df["survival_probability"] = still_here
+        if wait_pick is not None:
+            df["survival_probability_wait"] = still_here
         return df
 
     in_pool = df["position"].isin(config.POSITIONS) & ~df["name_key"].isin(drafted_name_keys)
     pool = df[in_pool]
+    checkpoints = [target_pick] + ([wait_pick] if wait_pick is not None else [])
     survival = simulate_intervening_picks(
-        pool, intervening, manager_priors, team_bias, owner_roster_by_manager, owner, n_sims=n_sims, rng=rng
+        pool, intervening, manager_priors, team_bias, owner_roster_by_manager, owner, n_sims=n_sims, rng=rng,
+        checkpoint_picks=checkpoints,
     )
+    mc_target = np.clip(survival[target_pick], 0.005, 0.995)
 
     df["survival_probability"] = 0.0
-    df.loc[in_pool, "survival_probability"] = np.clip(survival, 0.005, 0.995)
+    if method == "blend":
+        df.loc[in_pool, "survival_probability"] = 0.5 * mc_target + 0.5 * df.loc[in_pool, "survival_baseline"].to_numpy()
+    else:
+        df.loc[in_pool, "survival_probability"] = mc_target
+
+    if wait_pick is not None:
+        mc_wait = np.clip(survival[wait_pick], 0.005, 0.995)
+        df["survival_probability_wait"] = 0.0
+        if method == "blend":
+            df.loc[in_pool, "survival_probability_wait"] = 0.5 * mc_wait + 0.5 * df.loc[in_pool, "survival_baseline_wait"].to_numpy()
+        else:
+            df.loc[in_pool, "survival_probability_wait"] = mc_wait
+        not_in_pool = ~in_pool
+        df.loc[not_in_pool, "survival_probability_wait"] = np.where(
+            df.loc[not_in_pool, "name_key"].isin(drafted_name_keys), 0.0, 1.0
+        )
+
     return df
 
 
@@ -928,21 +1144,52 @@ def _intel_window_boost(df: pd.DataFrame, current_pick: int, tolerance: int = 6)
     return boost
 
 
-def top_recommendations(board_with_composite_and_availability: pd.DataFrame, roster: RosterState, n: int = 10) -> pd.DataFrame:
+def _kicker_suggestion(df: pd.DataFrame, roster: RosterState, drafted_name_keys: set[str]) -> pd.DataFrame:
+    """Work order 2026-08-24 item 7 (R35): the model has zero opinion on WHICH kicker
+    to take -- no props/factor-grid coverage exists for the position (R22) -- so this
+    is not a ranking, it is a single reminder that a kicker is now in play. Surfaced
+    only from round 14 on (GUARDRAILS W14 / config.KICKER_ROUND) and only while the
+    owner doesn't already have one; picks whichever available kicker has the best
+    (post-slide) reference_adp_rank purely as a tiebreak, not a value judgment."""
+    empty = df.iloc[0:0]
+    if roster.current_overall_pick < config.round_start_pick(config.KICKER_ROUND):
+        return empty
+    if roster.count("K") > 0:
+        return empty
+    candidates = df[(df["position"] == "K") & ~df["name_key"].isin(drafted_name_keys)]
+    if candidates.empty:
+        return empty
+    return candidates.sort_values("reference_adp_rank").head(1)
+
+
+def top_recommendations(
+    board_with_composite_and_availability: pd.DataFrame,
+    roster: RosterState,
+    n: int = 10,
+    drafted_name_keys: set[str] | None = None,
+) -> pd.DataFrame:
     df = board_with_composite_and_availability
+    drafted_name_keys = drafted_name_keys or set()
     if config.layer_on("player_intel") and "intel_tag" in df.columns:
         # hard_avoid is a FILTER, not a nudge (work order item 3) -- never surfaced as
         # a recommendation regardless of composite value, and never given arithmetic.
         df = df[df["intel_tag"] != "hard_avoid"]
+    # K is excluded from the generic need-adjusted sort entirely, not just de-weighted:
+    # market_norm (a within-position ADP percentile) is nonzero for K rows since they
+    # form their own group under the same groupby("position") that every other
+    # position uses, which would otherwise let a kicker's composite_score occasionally
+    # outrank a weak bench skill player -- exactly what "none before round 14" forbids.
+    skill = df[df["position"].isin(config.POSITIONS)].copy()
     needs = {pos: t - roster.count(pos) for pos, t in config.ROSTER_TARGET.items()}
-    df = df.copy()
-    df["roster_need"] = df["position"].map(needs).fillna(0).clip(lower=0)
-    df["need_adjusted_score"] = (
-        df["composite_score"]
-        * (1 + 0.05 * df["roster_need"].clip(upper=3))
-        * _intel_window_boost(df, roster.current_overall_pick)
+    skill["roster_need"] = skill["position"].map(needs).fillna(0).clip(lower=0)
+    skill["need_adjusted_score"] = (
+        skill["composite_score"]
+        * (1 + 0.05 * skill["roster_need"].clip(upper=3))
+        * _intel_window_boost(skill, roster.current_overall_pick)
     )
-    return df.sort_values("need_adjusted_score", ascending=False).head(n)
+    top = skill.sort_values("need_adjusted_score", ascending=False).head(n)
+    kicker = _kicker_suggestion(df, roster, drafted_name_keys)
+    return pd.concat([top, kicker]) if len(kicker) else top
 
 
 def evaluate_pick(
@@ -951,11 +1198,14 @@ def evaluate_pick(
     laporta_available: bool,
     owner_drift: pd.DataFrame | None,
     owner_rb_teams: set[str] | None = None,
+    drafted_name_keys: set[str] | None = None,
 ) -> dict:
     """The one function app/main.py calls per pick to get everything the UI needs:
     warnings, roster summary, the pick-53 fork, the Rd 7-11 band status, and a
     need-adjusted top-10. `board` must already have composite_score and
-    survival_probability computed (compute_composite + compute_availability)."""
+    survival_probability computed (compute_composite + compute_availability).
+    `drafted_name_keys` only feeds the single kicker suggestion (work order 2026-08-24
+    item 7); every other rule already reads draft state off `roster` and `board`."""
     warnings = evaluate_guardrails(roster, laporta_taken_at_pick53=not laporta_available and roster.count("TE") > 0, owner_drift=owner_drift)
     last_row = None
     if roster.picks:
@@ -975,5 +1225,5 @@ def evaluate_pick(
         "roster_summary": roster_summary(roster),
         "pick53_fork": pick53_fork_state(roster, laporta_available),
         "band_7_11": band_7_11_status(roster),
-        "top_recommendations": top_recommendations(board, roster),
+        "top_recommendations": top_recommendations(board, roster, drafted_name_keys=drafted_name_keys),
     }

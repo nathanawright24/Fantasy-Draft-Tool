@@ -11,6 +11,37 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+# ===========================================================================
+# FEATURE TOGGLES -- THE ONLY DEFINITION (work order 2026-08-24 item 5 / R33).
+#
+# build/pipeline.py and every app/ module read THIS dict, live, at call time --
+# never a second copy. The setup screen (app/draft_setup.py) writes per-session
+# overrides into state/draft_setup.json and applies them by mutating these
+# `applies` values in place (draft_setup.apply_setup()); it does not maintain its
+# own toggle list. If you're looking for where to add a tenth layer, or wondering
+# why main_cockpit.py doesn't have its own LAYERS dict: this is deliberate --
+# two copies drift, and manager_priors/nfl_team_bias/college_bias failing
+# together in another league (no drafts/all_draft_picks_*.csv there) is exactly
+# the kind of thing a second copy would forget to keep in sync.
+# ===========================================================================
+LAYERS = {
+    "implied_props":    {"available": True, "applies": True},
+    "factor_grids":     {"available": True, "applies": True},
+    "bonus_model":      {"available": True, "applies": True},
+    "oline_rankings":   {"available": True, "applies": True},
+    "manager_priors":   {"available": True, "applies": True},
+    "nfl_team_bias":    {"available": True, "applies": True},
+    "college_bias":     {"available": True, "applies": True},
+    "archetype_priors": {"available": True, "applies": True},
+    "player_intel":     {"available": True, "applies": True},
+}
+
+
+def layer_on(name: str) -> bool:
+    layer = LAYERS.get(name)
+    return bool(layer and layer["available"] and layer["applies"])
+
+
 # ---------------------------------------------------------------------------
 # Paths -- resolve once, derive everything else. Survives being moved or run
 # from a different working directory (Windows note in the spec).
@@ -92,6 +123,13 @@ OWNER = "Nathan"
 N_TEAMS = len(DRAFT_ORDER_2026)
 N_ROUNDS = 16
 
+# Immutable snapshots for the setup screen's "reset to factory" (app/draft_setup.py) --
+# DRAFT_ORDER_2026/OWNER/ROSTER_TARGET below are meant to be mutated in place at
+# runtime once a draft_setup.json exists, so the setup screen needs a copy that never
+# changes to offer as the starting point / reset target.
+DRAFT_ORDER_2026_FACTORY = tuple(DRAFT_ORDER_2026)
+OWNER_FACTORY = OWNER
+
 
 def snake_order(round_num: int, draft_order: list[str] = DRAFT_ORDER_2026) -> list[str]:
     """Pick order within a single round. Odd rounds forward, even rounds reversed."""
@@ -112,7 +150,7 @@ def full_draft_sequence(
 
 
 def owner_pick_windows(
-    owner: str = OWNER, draft_order: list[str] = DRAFT_ORDER_2026, rounds: int = N_ROUNDS
+    owner: str | None = None, draft_order: list[str] = DRAFT_ORDER_2026, rounds: int = N_ROUNDS
 ) -> list[dict]:
     """
     For every pick the owner makes, the round, overall pick number, and the ordered
@@ -122,7 +160,14 @@ def owner_pick_windows(
     This is the only place the fixed-window property (spec Section 3) is computed --
     derived from DRAFT_ORDER_2026, never hand-transcribed. tests/test_core.py asserts
     the invariant against this function's output.
+
+    `owner` defaults via a None sentinel, re-read from `OWNER` at CALL time rather than
+    bound into the signature at IMPORT time -- a plain `owner: str = OWNER` default
+    would freeze whatever OWNER equalled when this module first loaded, so the setup
+    screen's "change the owner slot, no rebuild" (R32) would silently stop working for
+    every caller that relies on this default instead of passing owner explicitly.
     """
+    owner = owner if owner is not None else OWNER
     seq = full_draft_sequence(draft_order, rounds)
     owner_positions = [i for i, (_, __, m) in enumerate(seq) if m == owner]
     windows = []
@@ -155,13 +200,17 @@ def managers_in_range(
 
 def managers_until_next_owner_pick(
     current_overall_pick: int,
-    owner: str = OWNER,
+    owner: str | None = None,
     draft_order: list[str] = DRAFT_ORDER_2026,
     rounds: int = N_ROUNDS,
 ) -> list[str]:
     """Live-draft version of the above: managers picking between right now and the
     owner's next turn, driven by the actual current pick rather than the precomputed
-    table. Used by the availability model during a live draft."""
+    table. Used by the availability model during a live draft.
+
+    See `owner_pick_windows`'s docstring for why `owner` defaults via a None sentinel
+    rather than `= OWNER` directly."""
+    owner = owner if owner is not None else OWNER
     seq = full_draft_sequence(draft_order, rounds)
     managers = []
     for overall, _, manager in seq:
@@ -177,25 +226,17 @@ def round_of_pick(overall_pick: int, n_teams: int = N_TEAMS) -> int:
     return (overall_pick - 1) // n_teams + 1
 
 
-# ---------------------------------------------------------------------------
-# Feature toggles -- the portability layer (spec Section 4.2)
-# ---------------------------------------------------------------------------
-LAYERS = {
-    "implied_props":    {"available": True, "applies": True},
-    "factor_grids":     {"available": True, "applies": True},
-    "bonus_model":      {"available": True, "applies": True},
-    "oline_rankings":   {"available": True, "applies": True},
-    "manager_priors":   {"available": True, "applies": True},
-    "nfl_team_bias":    {"available": True, "applies": True},
-    "college_bias":     {"available": True, "applies": True},
-    "archetype_priors": {"available": True, "applies": True},
-    "player_intel":     {"available": True, "applies": True},
-}
+def round_start_pick(round_num: int, n_teams: int = N_TEAMS) -> int:
+    """Inverse of round_of_pick: the first overall pick IN that round."""
+    return (round_num - 1) * n_teams + 1
 
 
-def layer_on(name: str) -> bool:
-    layer = LAYERS.get(name)
-    return bool(layer and layer["available"] and layer["applies"])
+# Work order 2026-08-24 item 7 (R35): nobody in this league drafts a kicker before
+# round 14 (GUARDRAILS W14). Shared by build/pipeline.py's kicker-row addition,
+# app/board_model.py's kicker slide, and app/draft_engine.py's single kicker
+# suggestion, so the three can't drift out of sync with each other.
+KICKER_ROUND = 14
+
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +247,7 @@ REFERENCE_ADP = {
     "is_sleeper": True,
     "csv_path": None,  # used when is_sleeper is False
 }
+REFERENCE_ADP_FACTORY = dict(REFERENCE_ADP)  # setup screen's reset target
 COMPARISON_ADP = {
     "source_name": "NFFC",
     "csv_path": str(NFFC_ADP_RAW_PATH),
@@ -233,6 +275,62 @@ AVAILABILITY_N_SIMS = 2000  # spec 12.3: "cost is negligible: 8 picks x ~2,000 s
 SURVIVAL_ANCHOR = "reference"
 SURVIVAL_DISPERSION_SOURCE = "comparison"
 
+# Work order 2026-08-24 item 1 (R36): which survival estimate compute_availability
+# returns as `survival_probability`. backtest.py's decision-band Brier bake-off, run
+# 2026-08-24 (see data/derived/backtest_report.txt for the full numbers): decision-band
+# (predicted in 0.15-0.85) Brier was montecarlo=0.1467 (n=568) vs lognormal=0.1798
+# (n=1275) -- an 18% relative gap, under the owner's 25% threshold for picking one
+# outright, so the LETTER of the rule fires the blend branch.
+#
+# Overridden to "montecarlo" by the owner after seeing that blend (a) scores WORSE than
+# plain montecarlo on the very metric that was supposed to justify it (blend
+# decision_band_brier=0.1722 vs montecarlo=0.1467), and (b) drags in the capacity-
+# invariant regression R20/R21 exists to prevent: the lognormal is marginal/uncapacitated
+# by design (the original "159 departures over 8 picks" defect), so blending it back in
+# reintroduces roughly half of that defect. Measured on a real pick 44->53 window
+# (k=8 real intervening picks): montecarlo expects ~9 departures, blend ~34, lognormal
+# alone ~59. Do not flip this without re-running the bake-off AND re-checking the
+# capacity invariant; it is a measured choice, not a preference. "montecarlo" |
+# "lognormal" | "blend" are the only valid values.
+AVAILABILITY_METHOD = "montecarlo"
+
+# Work order 2026-08-24 item 3 (R31): reach model. Managers don't draft strictly off
+# survival hazard -- they will jump up to ~15 picks of ADP for "their guy," more so
+# when they still need a thinning position. Modeled as a per-(manager, pick, position)
+# shift applied to the overall pick number BEFORE evaluating that position's hazard
+# curve in simulate_intervening_picks: a manager with mean reach +4 evaluates a
+# candidate's hazard as though the pick were 4 slots later in that player's own timeline
+# (more "due"), and a patient manager (negative mean) evaluates it as though earlier
+# (less due). Drawn fresh per simulated pick, not fixed, per the owner's "a distribution,
+# not a point" instruction.
+#
+# MANAGER_MEAN_REACH is transcribed from league-draft-tendencies-2026.md Section 4 (the
+# "Reach vs. value, measured against an independent market" table) -- unlike
+# team_bias.csv/adp_source_offsets.csv, this can't be recomputed from
+# drafts/all_draft_picks_2022-2025.csv in this repo: the alt-league comparison needs
+# alt-league username -> real-manager identity, which the raw file only carries for 5 of
+# the 12 (Asa, Jayden, Nathan, Colin, and one unmatched). Same category of hand
+# transcription as MANAGER_COLLEGE_AFFINITY below, for the same reason.
+MANAGER_MEAN_REACH = {
+    "Joseph": 4.1, "Dylan": 4.0, "Tyler": 3.4, "Colin": 0.9, "Kaiden": 0.6, "Asa": 0.2,
+    "Nathan": -1.0, "Greg": -1.4, "Jayden": -1.4, "Nick": -1.5, "Ryan": -1.6, "Cailen": -3.8,
+}
+REACH_MAX_PICKS = 15.0  # owner ruling: the hard cap on how far a manager reaches
+REACH_STD_BASE = 5.5  # modeling choice (not owner-specified): spreads the per-pick draw
+                        # so +-15 sits within the plausible tail for a near-zero-mean manager
+REACH_NEED_WIDEN_MEAN_BONUS = 5.0  # added to the mean reach for a position the manager still
+                                    # needs, when that position is thinning in the pool (below)
+REACH_NEED_WIDEN_STD_MULT = 1.5
+# "Thinning" is evaluated once per intervening-pick window (not re-checked every simulated
+# step -- see simulate_intervening_picks's docstring): fewer than this many STARTABLE
+# (vorp > 0) players of the position remain in the pool passed to the simulation. Counting
+# every row at the position instead of just the startable ones was tried first and never
+# fired -- player_master carries 70+ TE rows including deep bench chaff, so a raw row
+# count doesn't thin out inside any realistic in-draft window even when the startable tier
+# genuinely has (measured at the pick 44 window that the whole TE-squeeze narrative is
+# about: QB 10, RB 9, WR 25, TE 9 players left with vorp > 0).
+THINNING_POOL_THRESHOLD = {"QB": 10, "RB": 12, "WR": 15, "TE": 10}
+
 # ---------------------------------------------------------------------------
 # Composite scoring weights (spec Section 6.5) -- single editable dict,
 # renormalized at runtime over whichever layers are actually enabled.
@@ -257,6 +355,12 @@ INJURY_WEIGHT = 1.5  # weight injury more heavily than the source (best-ball has
 INTEL_NUDGE_CAP = 10.0
 INTEL_TAG_SIGN = {"target": 1.0, "fade": -1.0}
 INTEL_FILTER_TAGS = {"hard_avoid"}
+# "watch" (added 2026-08-24, e.g. LaPorta's target tag pulled the same day): neither a
+# nudge nor a filter -- the note stays visible and the row stays in recommendations, but
+# it contributes 0 to composite_score. For a player the owner is actively reconsidering,
+# that is the correct default: no thumb on the scale until he re-tags target or fade.
+INTEL_NOTE_ONLY_TAGS = {"watch"}
+INTEL_VALID_TAGS = set(INTEL_TAG_SIGN) | INTEL_FILTER_TAGS | INTEL_NOTE_ONLY_TAGS
 
 # ---------------------------------------------------------------------------
 # Roster target (spec Section 8 / R22). No K here: the props/factor-grid pipeline
@@ -265,6 +369,7 @@ INTEL_FILTER_TAGS = {"hard_avoid"}
 # taken by feel, outside the model. 15 tracked picks + 1 untracked K pick = 16.
 # ---------------------------------------------------------------------------
 ROSTER_TARGET = {"QB": 2, "RB": 5, "WR": 6, "TE": 2}
+ROSTER_TARGET_FACTORY = dict(ROSTER_TARGET)  # setup screen's reset target -- see DRAFT_ORDER_2026_FACTORY
 STARTING_LINEUP = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1}
 FLEX_ELIGIBLE = {"RB", "WR", "TE"}
 

@@ -52,14 +52,16 @@ toggled via `LAYERS["player_intel"]`.
 | Cam Skattebo | RB | 44 | 5 | target | No Sleeper ADP — verify status |
 | Garrett Wilson | WR | 44 | 6 | target | |
 | Zay Flowers | WR | 44 | 7 | target | |
-| Sam LaPorta | TE | 53 | 1 | target | Best composite of anything listed at 53 |
-| D'Andre Swift | RB | 53 | 2 | target | Preferred if available |
-| DJ Moore | WR | 53 | 3 | target | Only tolerable of the WR options here |
+| Sam LaPorta | TE | 53 | — | watch | **Target tag removed 2026-08-24.** 16th by VORP in the Sleeper 48-72 band (15.59) and sharp edge -22, i.e. expensive here. Owner read: a top-6 TE needs to be the number 1 or 2 target on his own offence, and he is third behind Gibbs and Jameson Williams. Injury history. Pick 53 reopened to best available |
+| D'Andre Swift | RB | 53 | 3 | target | Preferred if available |
+| DJ Moore | WR | 53 | 2 | target | VORP 21.11, sharp +13. Best of the WR options once age fades are respected |
+| Rome Odunze | WR | 53 | 1 | target | VORP 22.51, sharp +13, Breakout Candidate. Best combined VORP-plus-sharp play in the band that is not age-faded |
 | Quinshon Judkins | RB | 53 | — | fade | Explicit dislike |
 | TreVeyon Henderson | RB | 53 | — | fade | Vrabel usage doubt |
 | Bhayshul Tuten | RB | 53 | — | fade | Workload uncertainty |
-| Terry McLaurin | WR | 53 | — | fade | Age |
-| Mike Evans | WR | 53 | — | fade | Age |
+| Terry McLaurin | WR | 53 | — | watch | **Highest VORP in the whole 48-72 band: 39.51, sharp +12.** Faded for age. Owner will reconsider. If the age fade is a reflex rather than a read, he is the pick at 53 |
+| Mike Evans | WR | 53 | — | fade | Age. VORP 26.51 but sharp only +4 |
+| Davante Adams | WR | 53 | — | watch | VORP 37.51, second highest in the band, but sharp -1 so no market edge. Same age question as McLaurin |
 | Jameson Williams | WR | 53 | — | fade | |
 | Carnell Tate | WR | 53 | — | fade | |
 | Jadarian Price | RB | 68 | 1 | target | If RB2 still empty |

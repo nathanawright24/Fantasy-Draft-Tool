@@ -1,29 +1,66 @@
-Availability-model backtest -- spec Section 12.5 / R25
+Availability-model backtest -- spec Section 12.5 / R25, method bake-off per work order 2026-08-24 item 1 / R36
 ======================================================================
 2024: 358 skill-position players have an ADP proxy from other seasons; 45 players drafted this season have none (one-off rookies, no other-season appearance) and are excluded from this season's pool.
 2025: 332 skill-position players have an ADP proxy from other seasons; 70 players drafted this season have none (one-off rookies, no other-season appearance) and are excluded from this season's pool.
 
-Overall Brier score: 0.0351 over 8096 (pick-window, player) observations
-(0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time)
+8096 (pick-window, player) observations, all three methods scored on the identical set.
+(Brier: 0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time)
 
-By position (expect QB/TE worse -- 2026 scoring didn't exist when these drafts happened):
-  QB  n=  925  Brier=0.0362  mean_predicted=0.964  actual_survival_rate=0.963
-  RB  n= 2781  Brier=0.0364  mean_predicted=0.951  actual_survival_rate=0.975
-  TE  n= 1121  Brier=0.0314  mean_predicted=0.965  actual_survival_rate=0.971
-  WR  n= 3269  Brier=0.0350  mean_predicted=0.959  actual_survival_rate=0.970
+method        overall_brier  decision_band_brier  decision_band_n
+montecarlo           0.0349               0.1467              568
+lognormal            0.0685               0.1798             1275
+blend                0.0463               0.1722             1071
+(decision band = predicted in (0.15, 0.85))
 
-Calibration by probability decile (well-calibrated means predicted ~= actual):
+Owner's rule applied: decision-band Briers differ by only 18% (<= 25%) -- the letter of the rule says blend, but blend (Brier=0.1722) is not capacity-safe (R20/R21) and scores worse here than montecarlo alone (Brier=0.1467) -- overridden to montecarlo per owner decision 2026-08-24
+-> AVAILABILITY_METHOD = "montecarlo"
+
+Calibration by probability decile -- montecarlo (well-calibrated means predicted ~= actual):
                   n  mean_predicted  actual_survival_rate
 decile                                                   
-(-0.001, 0.1]    15        0.070600              0.800000
-(0.1, 0.2]       14        0.159357              0.857143
-(0.2, 0.3]       12        0.246667              0.833333
-(0.3, 0.4]       29        0.354138              0.862069
-(0.4, 0.5]       36        0.461139              1.000000
-(0.5, 0.6]       58        0.557776              0.896552
-(0.6, 0.7]       88        0.653966              0.965909
-(0.7, 0.8]      169        0.756846              0.964497
-(0.8, 0.9]      420        0.858998              0.940476
-(0.9, 1.0]     7255        0.983912              0.975052
+(-0.001, 0.1]    10        0.061700              0.800000
+(0.1, 0.2]       13        0.155154              0.769231
+(0.2, 0.3]       18        0.242556              0.888889
+(0.3, 0.4]       24        0.356833              0.916667
+(0.4, 0.5]       38        0.453816              0.947368
+(0.5, 0.6]       57        0.554877              0.912281
+(0.6, 0.7]       95        0.656295              0.957895
+(0.7, 0.8]      174        0.759609              0.959770
+(0.8, 0.9]      429        0.860070              0.941725
+(0.9, 1.0]     7238        0.984027              0.975131
 
-Reminder: sanity check on calibration, not a tuning target. Two seasons of one league is a small sample -- overfitting to it is easy. A QB/TE miss above may reflect the OLD 4pt passing TD scoring rather than a broken model; do not retune BONUS_SIGMA_* or manager-priors weights to force this specific backtest closer to well-calibrated.
+Calibration by probability decile -- lognormal (well-calibrated means predicted ~= actual):
+                  n  mean_predicted  actual_survival_rate
+decile                                                   
+(-0.001, 0.1]   178        0.018461              0.938202
+(0.1, 0.2]       50        0.156687              0.960000
+(0.2, 0.3]       68        0.253826              0.941176
+(0.3, 0.4]       77        0.355565              0.974026
+(0.4, 0.5]      100        0.455550              0.980000
+(0.5, 0.6]      147        0.549512              0.952381
+(0.6, 0.7]      222        0.657612              0.950450
+(0.7, 0.8]      341        0.756634              0.926686
+(0.8, 0.9]      770        0.857653              0.940260
+(0.9, 1.0]     6143        0.979872              0.980140
+
+Calibration by probability decile -- blend (well-calibrated means predicted ~= actual):
+                  n  mean_predicted  actual_survival_rate
+decile                                                   
+(-0.001, 0.1]    21        0.058138              0.761905
+(0.1, 0.2]       27        0.146365              0.888889
+(0.2, 0.3]       37        0.254725              0.918919
+(0.3, 0.4]       50        0.348172              0.960000
+(0.4, 0.5]      178        0.477804              0.966292
+(0.5, 0.6]      108        0.552870              0.981481
+(0.6, 0.7]      168        0.656386              0.952381
+(0.7, 0.8]      284        0.757460              0.947183
+(0.8, 0.9]      647        0.859324              0.936631
+(0.9, 1.0]     6576        0.980830              0.977646
+
+By position, montecarlo (expect QB/TE worse -- 2026 scoring didn't exist when these drafts happened):
+  QB  n=  925  Brier=0.0363  mean_predicted=0.964  actual_survival_rate=0.963
+  RB  n= 2781  Brier=0.0361  mean_predicted=0.951  actual_survival_rate=0.975
+  TE  n= 1121  Brier=0.0312  mean_predicted=0.965  actual_survival_rate=0.971
+  WR  n= 3269  Brier=0.0349  mean_predicted=0.959  actual_survival_rate=0.970
+
+Reminder: sanity check on calibration, not a tuning target. Two seasons of one league is a small sample -- overfitting to it is easy. A QB/TE miss above may reflect the OLD 4pt passing TD scoring rather than a broken model; do not retune BONUS_SIGMA_* or manager-priors weights to force this specific backtest closer to well-calibrated. This bake-off picks between two EXISTING methods -- it must not become a tuning loop for either one's internals.
