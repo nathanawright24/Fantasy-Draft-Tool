@@ -75,6 +75,16 @@ def sync_from_sleeper(state: dict, draft_id, board: pd.DataFrame) -> int:
     timestamp that only moved when a pick landed would look "stuck" for most of a
     90-second-per-pick window even while polling is working perfectly. `sync_error`
     holds the most recent failure message, or None once a poll succeeds again.
+
+    Name resolution (work order 2026-08-24b item 1) goes through
+    draft_state.resolve_sleeper_name_key -- crosswalk first, config.NAME_ALIASES
+    fallback second -- instead of a bare config.normalize_name(...) lookup, which is
+    what let Kenneth Walker (and every other Sleeper/master spelling mismatch) stay on
+    the board after being drafted: the pick landed under the WRONG key, so
+    drafted_name_keys() never matched the board row. If resolution still comes up
+    empty, that is now loud rather than a silent bare-Series fallback: logged to
+    config.UNMATCHED_SYNC_LOG_PATH and collected in st.session_state["sync_unmatched"]
+    for main() to render as an on-screen warning.
     """
     if not draft_id or not config.REFERENCE_ADP.get("is_sleeper"):
         return 0
@@ -86,11 +96,17 @@ def sync_from_sleeper(state: dict, draft_id, board: pd.DataFrame) -> int:
         return 0
     st.session_state["sync_error"] = None
     st.session_state["last_sync_at"] = time.time()
+    unmatched = st.session_state.setdefault("sync_unmatched", [])
     for p in new:
-        key = config.normalize_name(p["player"])
+        key = draft_state.resolve_sleeper_name_key(p["player"])
         match = board[board["name_key"] == key]
-        row = match.iloc[0] if len(match) else pd.Series(
-            {"player": p["player"], "position": p["position"], "nfl_team": p["nfl_team"]})
+        if len(match):
+            row = match.iloc[0]
+        else:
+            row = pd.Series({"player": p["player"], "position": p["position"], "nfl_team": p["nfl_team"]})
+            draft_state.log_unmatched_sync_name(draft_id, p["player"], p["position"], p["nfl_team"])
+            if p["player"] not in unmatched:
+                unmatched.append(p["player"])
         draft_state.add_pick(state, draft_id, row)
     return len(new)
 
@@ -109,6 +125,47 @@ def live_status(draft_id: str | None) -> tuple[str, str]:
     if last is None:
         return "waiting", "Watching Sleeper. No successful sync yet -- click Sync now or wait for the next poll."
     return "ok", f"Watching Sleeper. Recomputing on every pick. Last pick read {int(time.time() - last)} seconds ago."
+
+
+def compute_board(
+    master: pd.DataFrame, state: dict, priors: pd.DataFrame, team_bias: pd.DataFrame,
+    as_of_pick: int, target_pick: int, wait_pick: int | None,
+) -> pd.DataFrame:
+    """de.compute_composite + bm.availability_with_band, cached (work order 2026-08-24b
+    item 3 / R38) on (frozenset(drafted_name_keys), as_of_pick, target_pick, wait_pick)
+    -- measured at ~5.5s per call (2000-sim montecarlo, before this work order's other
+    fixes) on the real 433-row board, the dominant cost of a render by a wide margin.
+    A rerun where none of those four have changed -- every idle 6-second poll that
+    finds no new pick, or any other widget interaction that triggers a full rerun
+    without one -- is the common case, and now costs nothing instead of paying for the
+    simulation again. Cache lives in st.session_state (board_model.py itself must stay
+    UI-framework-free, per this repo's own grep check), and is cleared on every setup
+    save (render_setup_screen's submit handler), since roster_target/layers/owner all
+    change the result for the SAME four key fields.
+    """
+    drafted_name_keys = draft_state.drafted_name_keys(state)
+    key = (frozenset(drafted_name_keys), as_of_pick, target_pick, wait_pick)
+    cache = st.session_state.setdefault("board_cache", {})
+    if key in cache:
+        return cache[key]
+    board = de.compute_composite(master)
+    board = bm.availability_with_band(
+        board,
+        as_of_pick=as_of_pick,
+        target_pick=target_pick,
+        manager_priors=priors,
+        team_bias=team_bias,
+        drafted_name_keys=drafted_name_keys,
+        owner_roster_by_manager=draft_state.roster_counts_by_manager(state),
+        wait_pick=wait_pick,
+    )
+    if "survival_probability_wait" not in board.columns:
+        board["survival_probability_wait"] = board["survival_probability"]
+        board["survival_band_wait_pts"] = board["survival_band_pts"]
+    board["_sharp"] = board.apply(lambda r: bm.sharp_edge(r) or -999, axis=1)
+    cache.clear()  # only one live entry is ever useful -- the moment the key changes, the old board is stale anyway
+    cache[key] = board
+    return board
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +251,11 @@ def render_setup_screen(current: dict) -> None:
             # would otherwise read as stale, misleading status for the new draft_id.
             st.session_state.pop("sync_error", None)
             st.session_state.pop("last_sync_at", None)
+        # roster_target/layers/owner all change compute_board's result for the SAME
+        # (drafted_name_keys, as_of_pick, target_pick, wait_pick) cache key (work order
+        # 2026-08-24b item 3 / R38) -- any of them changing must invalidate it, not just
+        # a draft_id swap.
+        st.session_state.pop("board_cache", None)
         draft_setup.save_setup(new_setup)
         st.rerun()
 
@@ -238,24 +300,17 @@ def main() -> None:
         if window_as_of < o < survival_target and m != config.OWNER
     ]
 
-    board = de.compute_composite(master)
     # wait_pick asks the SAME simulation run for a second, further checkpoint (work
     # order 2026-08-24 item 2 / R30) -- when on the clock, survival_target already IS
-    # wait_reference, so there is nothing further to ask for.
-    board = bm.availability_with_band(
-        board,
+    # wait_reference, so there is nothing further to ask for. compute_board caches this
+    # whole call (work order 2026-08-24b item 3 / R38) on the pick numbers and drafted
+    # set, so a rerun with no new picks skips the montecarlo simulation entirely.
+    board = compute_board(
+        master, state, priors, team_bias,
         as_of_pick=owner_next if owner_on_clock else on_clock - 1,
         target_pick=survival_target,
-        manager_priors=priors,
-        team_bias=team_bias,
-        drafted_name_keys=draft_state.drafted_name_keys(state),
-        owner_roster_by_manager=draft_state.roster_counts_by_manager(state),
         wait_pick=wait_reference if wait_reference != survival_target else None,
     )
-    if "survival_probability_wait" not in board.columns:
-        board["survival_probability_wait"] = board["survival_probability"]
-        board["survival_band_wait_pts"] = board["survival_band_pts"]
-    board["_sharp"] = board.apply(lambda r: bm.sharp_edge(r) or -999, axis=1)
     available = board[~board["name_key"].isin(draft_state.drafted_name_keys(state))]
 
     roster = draft_state.owner_roster_state(state)
@@ -297,6 +352,19 @@ def main() -> None:
         landed = sync_from_sleeper(state, draft_id, board)
         st.toast(f"{landed} new pick{'s' if landed != 1 else ''}" if landed else "Nothing new")
         st.rerun()
+
+    unmatched_names = st.session_state.get("sync_unmatched")
+    if unmatched_names:
+        # Work order 2026-08-24b item 1 task 2: a Sleeper pick that didn't resolve to
+        # any player_master row used to disappear into a bare-Series fallback -- this
+        # is the "on screen" half of making that loud (log_unmatched_sync_name in
+        # sync_from_sleeper is the "in a log" half). Names stay listed until the
+        # session ends; they name real join gaps, not something to auto-dismiss.
+        st.warning(
+            "Sleeper sent a pick name that didn't match any player on the board -- logged to "
+            f"{config.UNMATCHED_SYNC_LOG_PATH.name}, roster counts for that pick may be off: "
+            + ", ".join(unmatched_names)
+        )
 
     if st.session_state.get("show_setup"):
         if st.button("Close setup"):

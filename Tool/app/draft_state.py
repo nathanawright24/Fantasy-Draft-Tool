@@ -15,13 +15,70 @@ nothing to "clear," because switching just means reading a different file.
 """
 from __future__ import annotations
 
+import csv
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
 import draft_engine as de  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Sleeper name resolution (work order 2026-08-24b item 1) -- the fix for Kenneth
+# Walker staying on the board after being drafted. Sleeper's own pick payload spells a
+# handful of names differently than player_master's name_key (build/pipeline.py already
+# resolves this for the ADP file, then threw it away); this is the app-side lookup that
+# uses what the build now keeps instead of re-deriving it.
+# ---------------------------------------------------------------------------
+_crosswalk_cache: dict[str, str] | None = None
+
+
+def _sleeper_crosswalk() -> dict[str, str]:
+    """sleeper_name_key -> master_name_key, loaded once per process from the build's
+    output. Module-level cache keyed by nothing but process lifetime is safe here:
+    unlike config.DRAFT_ORDER_2026 (mutated live by draft_setup.apply_setup), this file
+    only changes on a full pipeline rebuild, which always restarts the app anyway."""
+    global _crosswalk_cache
+    if _crosswalk_cache is None:
+        path = config.SLEEPER_NAME_CROSSWALK_PATH
+        table: dict[str, str] = {}
+        if path.exists():
+            with open(path, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    table[row["sleeper_name_key"]] = row["master_name_key"]
+        _crosswalk_cache = table
+    return _crosswalk_cache
+
+
+def resolve_sleeper_name_key(raw_name: str) -> str:
+    """The one function that turns a raw Sleeper pick name (e.g. "Kenneth Walker III")
+    into the name_key player_master actually uses ("ken walker"). Primary path is the
+    build-generated crosswalk (covers every name Sleeper's own ADP export carried at
+    build time); config.NAME_ALIASES is the fallback for a name that crosswalk doesn't
+    have a row for (most likely a very late addition to Sleeper's player pool)."""
+    raw_key = config.normalize_name(raw_name)
+    crosswalk = _sleeper_crosswalk()
+    if raw_key in crosswalk:
+        return crosswalk[raw_key]
+    return config.NAME_ALIASES.get(raw_key, raw_key)
+
+
+def log_unmatched_sync_name(draft_id: str | None, raw_name: str, position: str | None, nfl_team: str | None) -> None:
+    """Work order 2026-08-24b item 1 task 2: 'an unmatched Sleeper pick should surface
+    on screen and in a log, naming the raw string that failed.' This is the log half --
+    append-only, never overwritten, so a run of unmatched names accumulates a visible
+    trail instead of each one silently replacing the last."""
+    config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    line = (
+        f"{datetime.now().isoformat(timespec='seconds')}  draft={draft_id or 'manual'}  "
+        f"raw_name={raw_name!r}  position={position}  nfl_team={nfl_team}\n"
+    )
+    with open(config.UNMATCHED_SYNC_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(line)
+
 
 def _active_draft_pointer_file() -> Path:
     return config.STATE_DIR / "active_draft.json"

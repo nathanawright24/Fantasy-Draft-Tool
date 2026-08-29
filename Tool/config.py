@@ -66,6 +66,16 @@ PLAYER_INTEL_PATH = DATA_DERIVED / "player_intel.csv"
 REFERENCE_ADP_PATH = DATA_EXTERNAL / "reference_adp.csv"
 COMPARISON_ADP_PATH = DATA_EXTERNAL / "comparison_adp.csv"
 COLLEGE_BIAS_PATH = DATA_EXTERNAL / "college_bias_recall.csv"
+# Work order 2026-08-24b item 1: sleeper_name_key -> player_master name_key, built by
+# build/pipeline.py from the Sleeper ADP ingestion it already resolves (see
+# compute_sleeper_name_crosswalk). app/draft_state.py reads this at live-sync time so
+# the app never re-derives NAME_ALIASES logic on its own -- one path, not two.
+SLEEPER_NAME_CROSSWALK_PATH = DATA_DERIVED / "sleeper_name_crosswalk.csv"
+# Work order 2026-08-24b item 1 task 2: every live Sleeper pick whose name doesn't
+# resolve to any player_master row lands here, timestamped -- "in a log," not just a
+# silent fallback. app/state/ already holds per-draft state files; this is the same
+# directory, one file, append-only.
+UNMATCHED_SYNC_LOG_PATH = STATE_DIR / "unmatched_sleeper_picks.log"
 
 ALL_DRAFT_PICKS_PATH = DATA_DRAFTS / "all_draft_picks_2022-2025.csv"
 
@@ -260,7 +270,24 @@ ADP_MIN_N = 15  # NFFC rows below this sample count are shown but excluded from 
 # ---------------------------------------------------------------------------
 GENERIC_LOGNORMAL_SIGMA = 0.35  # fallback dispersion when adp_value exists but min/max/n don't
 GENERIC_ADP_SPREAD_PICKS = 24  # fallback normal-curve spread when there's no ADP mean pick, just a rank
-AVAILABILITY_N_SIMS = 2000  # spec 12.3: "cost is negligible: 8 picks x ~2,000 sims"
+# Work order 2026-08-24b item 3 (R38): "cost is negligible" (spec 12.3's original framing)
+# turned out wrong once actually measured against the real 433-row board -- 2000 sims
+# cost ~5.5s per render on its own, the single biggest piece of the reported "15 of 90
+# seconds" sync latency, not a rounding error next to it. Cut to 500 AFTER first fixing
+# and remeasuring the other real cost (board_model.candidates_for_pick's per-row scipy
+# loop, item 3's own first task) confirmed the simulation itself -- not the route
+# builder -- is what dominates a render (measured: montecarlo ~5.5s vs vectorized
+# candidates_for_pick ~1.2s for all ~10 calls a render makes). 500 is justified on
+# accuracy grounds independent of speed: decision-band Brier is reported in
+# data/derived/backtest_report.txt (rerun that for the current figure -- not hardcoded
+# here on purpose, per item 6's "lead with capacity, Brier is supporting evidence"),
+# and simulation standard error at n=500 is about +-2 points -- paying 4x runtime to
+# shrink a noise term that small relative to the model's own decision-band error is not
+# a trade worth making (see the report for the exact current gap).
+# THE single source of truth for this count -- app/board_model.py's own N_SIMS_UI reads
+# this rather than hardcoding a second copy (the two constants had drifted into
+# agreement by coincidence, not by construction, before this comment was written).
+AVAILABILITY_N_SIMS = 500
 
 # Work order 2026-08-16 item 1: the owner drafts on Sleeper, and Sleeper vs NFFC diverge
 # systematically (measured: Sleeper ranks TE ~23 and QB ~13 picks earlier than NFFC's
@@ -276,22 +303,34 @@ SURVIVAL_ANCHOR = "reference"
 SURVIVAL_DISPERSION_SOURCE = "comparison"
 
 # Work order 2026-08-24 item 1 (R36): which survival estimate compute_availability
-# returns as `survival_probability`. backtest.py's decision-band Brier bake-off, run
-# 2026-08-24 (see data/derived/backtest_report.txt for the full numbers): decision-band
-# (predicted in 0.15-0.85) Brier was montecarlo=0.1467 (n=568) vs lognormal=0.1798
-# (n=1275) -- an 18% relative gap, under the owner's 25% threshold for picking one
-# outright, so the LETTER of the rule fires the blend branch.
+# returns as `survival_probability`. Reasoned CAPACITY FIRST, Brier second (work order
+# 2026-08-24b item 6 / R39 -- this comment used to lead with the Brier gap and treat
+# capacity as a tie-breaking override; that was backwards, and the gap it led with was
+# never a sound comparison to begin with -- see below).
 #
-# Overridden to "montecarlo" by the owner after seeing that blend (a) scores WORSE than
-# plain montecarlo on the very metric that was supposed to justify it (blend
-# decision_band_brier=0.1722 vs montecarlo=0.1467), and (b) drags in the capacity-
-# invariant regression R20/R21 exists to prevent: the lognormal is marginal/uncapacitated
-# by design (the original "159 departures over 8 picks" defect), so blending it back in
-# reintroduces roughly half of that defect. Measured on a real pick 44->53 window
-# (k=8 real intervening picks): montecarlo expects ~9 departures, blend ~34, lognormal
-# alone ~59. Do not flip this without re-running the bake-off AND re-checking the
-# capacity invariant; it is a measured choice, not a preference. "montecarlo" |
-# "lognormal" | "blend" are the only valid values.
+# montecarlo is the only one of the three candidate methods that is capacity-safe
+# (R20/R21): it discretely simulates the draft, so exactly k players leave in k real
+# picks, by construction. lognormal is marginal/uncapacitated by design (the original
+# "159 departures over 8 picks" defect); blend averages the lognormal back in and
+# reintroduces roughly half of that defect. Measured on a real pick 44->53 window (k=8
+# real intervening picks): montecarlo expects ~9 departures, blend ~34, lognormal alone
+# ~59. This is a STRUCTURAL property of each method, independent of any backtest
+# number, and it is decisive on its own.
+#
+# backtest.py's decision-band Brier bake-off (data/derived/backtest_report.txt for the
+# current run's numbers) is supporting evidence only, and weaker evidence than it first
+# looks: decision-band membership (predicted in 0.15-0.85) is defined by EACH method's
+# OWN predictions, so montecarlo/lognormal/blend land in the band different numbers of
+# times (measured 2026-08-24: n=568 / 1275 / 1071) and their Briers are not computed on
+# the same sample. The "18% gap, under a 25% threshold" framing this comment used to
+# lead with treated that gap as a sound apples-to-apples comparison; it isn't one.
+# montecarlo has won decision-band Brier in every run so far regardless, consistent
+# with (not proof of) the capacity argument above.
+#
+# See backtest.py's decide_availability_method for the up-to-date reasoning in code
+# form. Do not flip this without re-checking the capacity invariant first -- that is
+# the argument that actually governs the choice; a future Brier re-run alone should not
+# move it. "montecarlo" | "lognormal" | "blend" are the only valid values.
 AVAILABILITY_METHOD = "montecarlo"
 
 # Work order 2026-08-24 item 3 (R31): reach model. Managers don't draft strictly off
@@ -568,3 +607,40 @@ def parse_sleeper_name(raw: str) -> tuple[str, str, str | None]:
     first = tokens[0]
     last = " ".join(tokens[1:])
     return first, last, suffix
+
+
+# ---------------------------------------------------------------------------
+# Name-alias fallback (work order 2026-08-24b item 1). Moved here from
+# build/pipeline.py so build/ and app/ share ONE table instead of the pipeline having
+# one the live app never saw -- the original bug (Kenneth Walker stayed on the board
+# for rounds after being drafted) was exactly this: normalize_name("Kenneth Walker
+# III") -> "kenneth walker", but player_master's own name_key is "ken walker", and
+# nothing in the live sync path applied the rekeying build/pipeline.py already knew
+# about.
+#
+# This is now the FALLBACK path, not the primary one: build/pipeline.py also emits
+# data/derived/sleeper_name_crosswalk.csv (SLEEPER_NAME_CROSSWALK_PATH), a full
+# sleeper_name_key -> master_name_key table built from the real Sleeper ADP ingestion
+# joined against player_master -- an actual crosswalk the pipeline already resolves
+# every build, rather than a hand-maintained list someone has to remember to extend.
+# The alias table below only matters for a name the crosswalk doesn't cover (a player
+# who wasn't in the ADP pull the crosswalk was built from -- a very late add, most
+# likely). Every entry was verified against both source rows before being added -- not
+# a guess.
+#
+# "chig okonkwo"/"cam ward": factor-grid priors use a nickname, props use the full
+# name. "kenneth walker" / "cameron skattebo" / "kenny gainwell": ADP-side nickname
+# mismatches against props' spelling (work order 2026-08-16 item 2's reclassified
+# severity -- any top-150-by-either-source player with no market join is a hard
+# failure, not a note -- surfaced all three). The alias direction is NOT uniform:
+# Sleeper writes the LONGER form for Walker ("Kenneth Walker III" vs props' "Ken
+# Walker III") but the SHORTER form for Gainwell ("Kenny Gainwell" vs props'
+# "Kenneth Gainwell") -- a hand-maintained list can't be eyeballed for that kind of
+# asymmetry, which is the other reason the crosswalk above is now the primary path.
+NAME_ALIASES = {
+    "chig okonkwo": "chigoziem okonkwo",
+    "cam ward": "cameron ward",
+    "kenneth walker": "ken walker",
+    "cameron skattebo": "cam skattebo",
+    "kenny gainwell": "kenneth gainwell",
+}

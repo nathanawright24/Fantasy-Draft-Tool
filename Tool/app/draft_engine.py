@@ -338,17 +338,72 @@ def _survival_baseline_row(row: pd.Series, as_of_pick: int, target_pick: int) ->
     return float(np.clip(surv, 0.0, 1.0)), anchor
 
 
+def _pool_column(pool: pd.DataFrame, field: str | None) -> np.ndarray:
+    if not field or field not in pool.columns:
+        return np.full(len(pool), np.nan)
+    return pool[field].to_numpy(dtype=float)
+
+
 def _lognormal_fit_arrays(pool: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-player (mu, sigma, has_fit) arrays, computed once and reused across every
     intervening pick's hazard evaluation -- the fit itself doesn't depend on the pick
-    number, only its survival/hazard VALUE does."""
+    number, only its survival/hazard VALUE does.
+
+    Fully vectorized (work order 2026-08-24b item 3 / R38): the original version
+    called `_fit_lognormal_from_adp` in a per-row Python loop, and that function calls
+    `norm.ppf` TWICE per row whenever a dispersion range is available (the common case
+    for anyone with NFFC coverage) -- profiling `board_model.candidates_for_pick` (which
+    calls this once per invocation, ~10 times a render) showed this loop, not the
+    survival-probability scipy calls already vectorized, as the actual dominant cost
+    once those were fixed: ~2s of a ~2.5s / 10-call profile. Same formula as
+    `_fit_lognormal_from_adp`/`_resolve_survival_sources`, applied to the whole pool
+    with `norm.ppf` and `np.log` called once each over arrays instead of once per row --
+    those two are left in place (used elsewhere for single-row lookups, e.g. the
+    baseline curve in `_survival_baseline_row`), this is a second, array-shaped path to
+    the identical numbers. Covered by a numeric-equivalence test against the per-row
+    version in tests/test_core.py.
+    """
     n = len(pool)
-    mu_arr, sigma_arr, has_fit = np.zeros(n), np.zeros(n), np.zeros(n, dtype=bool)
-    for i, row in enumerate(pool.to_dict("records")):
-        params = _fit_lognormal_from_adp(*_resolve_survival_sources(row))
-        if params is not None:
-            mu_arr[i], sigma_arr[i], _ = params
-            has_fit[i] = True
+    primary_field, _, _, _ = _ADP_SOURCE_FIELDS[config.SURVIVAL_ANCHOR]
+    secondary_src = "comparison" if config.SURVIVAL_ANCHOR == "reference" else "reference"
+    secondary_field, _, _, _ = _ADP_SOURCE_FIELDS[secondary_src]
+    disp_field, disp_min_field, disp_max_field, disp_n_field = _ADP_SOURCE_FIELDS[config.SURVIVAL_DISPERSION_SOURCE]
+
+    primary = _pool_column(pool, primary_field)
+    secondary = _pool_column(pool, secondary_field)
+    disp_value = _pool_column(pool, disp_field)
+    disp_min = _pool_column(pool, disp_min_field)
+    disp_max = _pool_column(pool, disp_max_field)
+    disp_n = _pool_column(pool, disp_n_field)
+
+    use_primary = np.isfinite(primary) & (primary > 0)
+    use_secondary = ~use_primary & np.isfinite(secondary) & (secondary > 0)
+    has_fit = use_primary | use_secondary
+    anchor = np.where(use_primary, primary, secondary)
+
+    mu_arr = np.zeros(n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mu_arr[has_fit] = np.log(anchor[has_fit])
+
+    sigma_arr = np.full(n, config.GENERIC_LOGNORMAL_SIGMA)
+    have_range = (
+        has_fit & np.isfinite(disp_n) & (disp_n >= 2)
+        & np.isfinite(disp_min) & np.isfinite(disp_max) & (disp_max > disp_min) & (disp_min > 0)
+        & np.isfinite(disp_value) & (disp_value > 0)
+    )
+    if have_range.any():
+        dn, dv = disp_n[have_range], disp_value[have_range]
+        dmin, dmax = disp_min[have_range], disp_max[have_range]
+        dispersion_mu = np.log(dv)
+        z_lo = norm.ppf(1.0 / (dn + 1))
+        z_hi = norm.ppf(dn / (dn + 1))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cand_lo = np.where(z_lo < -1e-6, (np.log(dmin) - dispersion_mu) / z_lo, np.nan)
+            cand_hi = np.where(z_hi > 1e-6, (np.log(dmax) - dispersion_mu) / z_hi, np.nan)
+        mean_cand = np.nanmean(np.vstack([cand_lo, cand_hi]), axis=0)
+        fitted = np.maximum(np.where(np.isnan(mean_cand), config.GENERIC_LOGNORMAL_SIGMA, mean_cand), 0.05)
+        sigma_arr[have_range] = fitted
+
     return mu_arr, sigma_arr, has_fit
 
 
@@ -586,7 +641,8 @@ def simulate_intervening_picks(
     n_sims: int = config.AVAILABILITY_N_SIMS,
     rng: np.random.Generator | None = None,
     checkpoint_picks: list[int] | None = None,
-) -> np.ndarray | dict[int, np.ndarray]:
+    want_edge: bool = False,
+) -> np.ndarray | dict[int, np.ndarray] | tuple[np.ndarray | dict[int, np.ndarray], dict[int, dict[str, float]]]:
     """Monte Carlo capacity constraint (spec 12.3, R20/R21): discretely simulates every
     intervening pick so exactly k players leave in k picks, by construction -- fixing
     the marginal model's "159 players expected gone in 8 picks" defect. Each pick is
@@ -613,20 +669,36 @@ def simulate_intervening_picks(
     simulated draws instead of disagreeing (work order 2026-08-24 item 2 / R30). A
     checkpoint's survival is measured immediately before the first intervening pick at or
     after it, i.e. "still there when that pick number comes up."
+
+    `want_edge` (work order 2026-08-24b items 2+4, only meaningful with
+    `checkpoint_picks`): also returns, as a second tuple element,
+    `{checkpoint_pick: {position: expected_max_vorp_among_available}}` -- the
+    E[max vorp among same-position players available at that checkpoint] term the
+    board's drop-off-adjusted `edge` column needs, computed from the exact SAME
+    per-simulation draws as the survival fractions above rather than a second,
+    separate simulation pass (twice the montecarlo cost for a latency work order to
+    pay). Every caller that doesn't pass `want_edge=True` gets the pre-existing return
+    shape unchanged.
     """
     rng = rng or np.random.default_rng()
     owner = owner if owner is not None else config.OWNER  # see config.owner_pick_windows's docstring for why
     n = len(pool)
     checkpoints = sorted(set(checkpoint_picks)) if checkpoint_picks else None
+    want_edge = want_edge and bool(checkpoints)
     if n == 0 or not intervening:
         ones = np.ones(n)
-        return {p: ones for p in checkpoints} if checkpoints else ones
+        result = {p: ones for p in checkpoints} if checkpoints else ones
+        if want_edge:
+            zero_edge = {pos: 0.0 for pos in config.POSITIONS}
+            return result, {p: dict(zero_edge) for p in checkpoints}
+        return result
 
     positions = pool["position"].to_numpy()
     pos_index = {p: i for i, p in enumerate(config.POSITIONS)}
     pos_codes = np.array([pos_index.get(p, -1) for p in positions])
     rank_arr = pool.get("reference_adp_rank", pd.Series(np.nan, index=pool.index)).to_numpy(dtype=float)
     mu_arr, sigma_arr, has_fit = _lognormal_fit_arrays(pool)
+    vorp_arr = pool.get("vorp", pd.Series(0.0, index=pool.index)).fillna(0.0).to_numpy(dtype=float) if want_edge else None
 
     priors_by_manager = manager_priors.set_index("manager")
     league_avg_row = pd.Series(_league_average_rates(manager_priors, owner))
@@ -680,6 +752,17 @@ def simulate_intervening_picks(
     boundary_at = {p: sum(1 for ov in overalls if ov < p) for p in (checkpoints or [])}
     checkpoint_counts = {p: np.zeros(n, dtype=np.int64) for p in (checkpoints or [])}
     ordered_checkpoints = checkpoints or []
+    # edge_best_sum[p][pos_index] accumulates, across sims, the max vorp among
+    # available players of that position AT the checkpoint -- summed here (one small
+    # per-position max per checkpoint reached, negligible next to the per-sim pick
+    # loop below) and divided by n_sims once, after the loop, into an expectation.
+    edge_best_sum = {p: np.zeros(len(config.POSITIONS)) for p in (checkpoints or [])} if want_edge else None
+
+    def _accumulate_edge(cp, available_mask):
+        for pi in range(len(config.POSITIONS)):
+            pmask = available_mask & (pos_codes == pi)
+            if pmask.any():
+                edge_best_sum[cp][pi] += vorp_arr[pmask].max()
 
     survived_count = np.zeros(n, dtype=np.int64)
     for sim_i in range(n_sims):
@@ -688,7 +771,10 @@ def simulate_intervening_picks(
         next_cp = 0
         for k, (overall, round_num, manager) in enumerate(intervening):
             while next_cp < len(ordered_checkpoints) and boundary_at[ordered_checkpoints[next_cp]] == k:
-                checkpoint_counts[ordered_checkpoints[next_cp]] += available
+                cp = ordered_checkpoints[next_cp]
+                checkpoint_counts[cp] += available
+                if want_edge:
+                    _accumulate_edge(cp, available)
                 next_cp += 1
 
             idx = np.flatnonzero(available)
@@ -711,13 +797,21 @@ def simulate_intervening_picks(
             if pc >= 0 and manager in has_pos:
                 has_pos[manager][pc] = True
         while next_cp < len(ordered_checkpoints):
-            checkpoint_counts[ordered_checkpoints[next_cp]] += available
+            cp = ordered_checkpoints[next_cp]
+            checkpoint_counts[cp] += available
+            if want_edge:
+                _accumulate_edge(cp, available)
             next_cp += 1
         survived_count += available.astype(np.int64)
 
-    if checkpoints:
-        return {p: checkpoint_counts[p] / n_sims for p in checkpoints}
-    return survived_count / n_sims
+    result = {p: checkpoint_counts[p] / n_sims for p in checkpoints} if checkpoints else survived_count / n_sims
+    if want_edge:
+        edge_expectation = {
+            p: {pos: float(edge_best_sum[p][pi]) / n_sims for pi, pos in enumerate(config.POSITIONS)}
+            for p in checkpoints
+        }
+        return result, edge_expectation
+    return result
 
 
 def compute_availability(
@@ -734,9 +828,23 @@ def compute_availability(
     rng: np.random.Generator | None = None,
     wait_pick: int | None = None,
     method: str | None = None,
+    want_edge: bool = False,
 ) -> pd.DataFrame:
     """Adds `survival_baseline`, `availability_used_fallback`, and `survival_probability`
     to a copy of `board` -- plus `survival_probability_wait` when `wait_pick` is given.
+
+    `want_edge` (work order 2026-08-24b items 2+4) adds an `edge` column:
+    `vorp(p) - E[max vorp among same-position players available at target_pick]`, from
+    the SAME simulate_intervening_picks pass as `survival_probability` (`want_edge` is
+    forwarded straight through, so this never doubles the montecarlo cost). This is
+    what `board_model.candidates_for_pick` sorts on instead of raw `vorp` -- it is
+    `vorp` net of "how much of this position's value is likely to survive to my own
+    next turn anyway," which is the RB-hungry-league signal raw vorp was missing
+    (Chase Brown's vorp minus the expected best RB at the target pick is small; Ja'Marr
+    Chase's minus the expected best WR is large, with no hand-tuned position weight).
+    Falls back to plain `vorp` (no drop-off signal available) whenever the function
+    can't or won't run the simulation: `method="lognormal"`, the manager_priors layer
+    is off, or there are no intervening picks to simulate.
 
     `as_of_pick` is the last pick actually made in the live draft (0 if none yet).
     `target_pick` is the pick we want survival probability AT -- normally the owner's
@@ -782,6 +890,12 @@ def compute_availability(
     owner = owner if owner is not None else config.OWNER  # see config.owner_pick_windows's docstring for why
     if wait_pick is not None and wait_pick <= target_pick:
         raise ValueError(f"wait_pick ({wait_pick}) must be strictly after target_pick ({target_pick})")
+    if want_edge:
+        # Default/fallback value -- overwritten below only in the branch that actually
+        # runs the simulation. "no drop-off signal available" degrades to plain vorp,
+        # which is the correct degenerate case: with nothing simulated, there is
+        # nothing to net out.
+        df["edge"] = df.get("vorp", pd.Series(np.nan, index=df.index))
 
     def _baseline_for(pick: int) -> tuple[list[float], list[str]]:
         baseline, anchor = [], []
@@ -828,11 +942,15 @@ def compute_availability(
     in_pool = df["position"].isin(config.POSITIONS) & ~df["name_key"].isin(drafted_name_keys)
     pool = df[in_pool]
     checkpoints = [target_pick] + ([wait_pick] if wait_pick is not None else [])
-    survival = simulate_intervening_picks(
+    sim_result = simulate_intervening_picks(
         pool, intervening, manager_priors, team_bias, owner_roster_by_manager, owner, n_sims=n_sims, rng=rng,
-        checkpoint_picks=checkpoints,
+        checkpoint_picks=checkpoints, want_edge=want_edge,
     )
+    survival, edge_expectation = sim_result if want_edge else (sim_result, None)
     mc_target = np.clip(survival[target_pick], 0.005, 0.995)
+    if want_edge:
+        best_at_target = pool["position"].map(edge_expectation[target_pick])
+        df.loc[in_pool, "edge"] = (pool["vorp"] - best_at_target).to_numpy()
 
     df["survival_probability"] = 0.0
     if method == "blend":

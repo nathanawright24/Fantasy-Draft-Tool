@@ -1,10 +1,10 @@
 {
   "draft_order": [
     "Dylan",
-    "Cailen",
+    "Nathan",
     "Tyler",
     "Nick",
-    "Nathan",
+    "Cailen",
     "Asa",
     "Greg",
     "Ryan",
@@ -27,12 +27,12 @@
     "factor_grids": true,
     "bonus_model": true,
     "oline_rankings": true,
-    "manager_priors": true,
-    "nfl_team_bias": true,
+    "manager_priors": false,
+    "nfl_team_bias": false,
     "college_bias": true,
     "archetype_priors": true,
     "player_intel": true
   },
   "te1_fork_player": "Sam LaPorta",
-  "sleeper_draft_id": "1397772314552066048"
+  "sleeper_draft_id": "1398137421127766016"
 }

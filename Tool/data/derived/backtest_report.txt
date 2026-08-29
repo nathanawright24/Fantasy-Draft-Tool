@@ -3,17 +3,19 @@ Availability-model backtest -- spec Section 12.5 / R25, method bake-off per work
 2024: 358 skill-position players have an ADP proxy from other seasons; 45 players drafted this season have none (one-off rookies, no other-season appearance) and are excluded from this season's pool.
 2025: 332 skill-position players have an ADP proxy from other seasons; 70 players drafted this season have none (one-off rookies, no other-season appearance) and are excluded from this season's pool.
 
-8096 (pick-window, player) observations, all three methods scored on the identical set.
-(Brier: 0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time)
+8096 (pick-window, player) observations feed all three methods, but see the
+decision-band n's below before comparing their Briers -- they are NOT the same sample.
 
+Decision: montecarlo is the only capacity-safe method (R20/R21) -- decisive on its own, independent of Brier. Decision-band Brier is supporting evidence only, and the three methods were scored on different observation counts (montecarlo n=568, lognormal n=1275, blend n=1071 -- band membership depends on each method's own predictions), so a gap between them is not a sound comparison. For reference: montecarlo=0.1467, lognormal=0.1798, blend=0.1722.
+-> AVAILABILITY_METHOD = "montecarlo"
+
+Supporting evidence (Brier: 0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time):
 method        overall_brier  decision_band_brier  decision_band_n
 montecarlo           0.0349               0.1467              568
 lognormal            0.0685               0.1798             1275
 blend                0.0463               0.1722             1071
-(decision band = predicted in (0.15, 0.85))
-
-Owner's rule applied: decision-band Briers differ by only 18% (<= 25%) -- the letter of the rule says blend, but blend (Brier=0.1722) is not capacity-safe (R20/R21) and scores worse here than montecarlo alone (Brier=0.1467) -- overridden to montecarlo per owner decision 2026-08-24
--> AVAILABILITY_METHOD = "montecarlo"
+(decision band = predicted in (0.15, 0.85); the three decision_band_n's differ because band
+ membership is defined by each method's own predictions -- these Briers are not directly comparable)
 
 Calibration by probability decile -- montecarlo (well-calibrated means predicted ~= actual):
                   n  mean_predicted  actual_survival_rate

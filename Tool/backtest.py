@@ -191,10 +191,13 @@ def _decile_calibration(predicted: pd.Series, actual: pd.Series) -> pd.DataFrame
 
 
 def score_methods(results: pd.DataFrame) -> dict:
-    """Overall Brier, decision-band Brier (predicted in DECISION_BAND -- the number that
-    actually decides anything, per the owner's framing: the overall figure is close to
-    meaningless when ~90% of observations are foregone conclusions), and calibration
-    deciles for each of montecarlo / lognormal / blend."""
+    """Overall Brier, decision-band Brier (predicted in DECISION_BAND -- more useful
+    than the overall figure, which is close to meaningless when ~90% of observations
+    are foregone conclusions, but NOT the thing that decides AVAILABILITY_METHOD --
+    see decide_availability_method's docstring for why: band membership is defined by
+    each method's own predictions, so decision_band_n differs across methods and their
+    Briers are supporting evidence, not a sound head-to-head comparison), and
+    calibration deciles for each of montecarlo / lognormal / blend."""
     out = {}
     for method in METHODS:
         col = f"predicted_{method}"
@@ -210,34 +213,50 @@ def score_methods(results: pd.DataFrame) -> dict:
 
 
 def decide_availability_method(scores: dict) -> tuple[str, str]:
-    """Work order 2026-08-24 item 1's ruling: 'if the decision-band Briers differ by
-    more than ~25%, use the better one alone. Otherwise implement the blend.' Returns
-    (method, reason).
+    """R36's decision, reasoned in the order work order 2026-08-24b item 6 asks for:
+    CAPACITY leads, Brier is supporting evidence, never the reverse.
 
-    The "otherwise blend" branch is overridden to montecarlo, per a 2026-08-24 owner
-    decision made after seeing two things the mechanical rule doesn't know about: (1)
-    blend is not capacity-safe -- it averages in the lognormal's marginal, uncapacitated
-    estimate, reintroducing (at about half strength) the "many more expected departures
-    than real picks" defect R20/R21 exist specifically to fix (measured on a real pick
-    44->53 window, k=8: montecarlo expects ~9 departures, blend ~34, lognormal alone
-    ~59); (2) montecarlo alone already beats blend on decision-band Brier in every run
-    so far, so blending has no upside here to weigh against that downside. If a future
-    re-run shows blend's decision-band Brier clearly beating montecarlo's, that
-    calculus should be revisited rather than assumed to still hold.
+    The original version of this function opened with a mechanical rule -- 'if the
+    decision-band Briers differ by more than ~25%, use the better one alone, otherwise
+    blend' -- and only fell back on the capacity argument to override that rule's
+    'otherwise blend' branch. That is backwards for a second reason beyond ordering:
+    the ~25% figure the rule fired on is not a sound comparison in the first place.
+    Decision-band membership (`predicted in DECISION_BAND`) is defined by EACH
+    method's OWN predictions, so the three methods are scored on different
+    observation counts -- montecarlo, lognormal, and blend routinely land in the
+    hundreds apart (see the n column `_report` prints alongside this). Brier scores
+    computed on different samples are not comparable, so "18% gap, under the 25%
+    threshold" was never the kind of number that rule could safely act on.
+
+    montecarlo is the only one of the three that is capacity-safe (R20/R21: exactly k
+    players leave in k real picks, by construction). lognormal is marginal and
+    uncapacitated by design; blend reintroduces roughly half of that defect by
+    averaging it back in (measured on a real pick 44->53 window, k=8: montecarlo
+    expects ~9 departures, blend ~34, lognormal alone ~59). That is a STRUCTURAL
+    property of each method, independent of any Brier number, and it is decisive on
+    its own -- which is why this function no longer branches on the Brier gap at all.
+
+    The Brier scores below are reported as weak supporting evidence only: montecarlo
+    has in fact won decision-band Brier in every run so far, which is consistent with
+    (not proof of) the capacity argument, and a future run where it stopped winning
+    would not by itself be a reason to reconsider -- the observation-count mismatch
+    means that comparison was never strong enough to lean on either way.
     """
-    mc_b = scores["montecarlo"]["decision_band_brier"]
-    log_b = scores["lognormal"]["decision_band_brier"]
-    if pd.isna(mc_b) or pd.isna(log_b) or mc_b == 0:
-        return "montecarlo", "one of the two methods had no decision-band observations to score -- defaulting to montecarlo (capacity-safe)"
-    rel_diff = abs(mc_b - log_b) / max(mc_b, log_b)
-    if rel_diff > 0.25:
-        better = "montecarlo" if mc_b < log_b else "lognormal"
-        return better, f"decision-band Briers differ by {rel_diff:.0%} (> 25%) -- montecarlo={mc_b:.4f}, lognormal={log_b:.4f}"
-    blend_b = scores["blend"]["decision_band_brier"]
+    mc = scores["montecarlo"]["decision_band_brier"]
+    log = scores["lognormal"]["decision_band_brier"]
+    blend = scores["blend"]["decision_band_brier"]
+    mc_n = scores["montecarlo"]["decision_band_n"]
+    log_n = scores["lognormal"]["decision_band_n"]
+    blend_n = scores["blend"]["decision_band_n"]
+    mc_str = "n/a" if pd.isna(mc) else f"{mc:.4f}"
+    log_str = "n/a" if pd.isna(log) else f"{log:.4f}"
+    blend_str = "n/a" if pd.isna(blend) else f"{blend:.4f}"
     return "montecarlo", (
-        f"decision-band Briers differ by only {rel_diff:.0%} (<= 25%) -- the letter of the rule says blend, but "
-        f"blend (Brier={blend_b:.4f}) is not capacity-safe (R20/R21) and scores worse here than montecarlo alone "
-        f"(Brier={mc_b:.4f}) -- overridden to montecarlo per owner decision 2026-08-24"
+        "montecarlo is the only capacity-safe method (R20/R21) -- decisive on its own, independent of Brier. "
+        f"Decision-band Brier is supporting evidence only, and the three methods were scored on different "
+        f"observation counts (montecarlo n={mc_n}, lognormal n={log_n}, blend n={blend_n} -- band membership "
+        f"depends on each method's own predictions), so a gap between them is not a sound comparison. For "
+        f"reference: montecarlo={mc_str}, lognormal={log_str}, blend={blend_str}."
     )
 
 
@@ -252,19 +271,25 @@ def _report(results: pd.DataFrame, notes: list[str]) -> str:
         return "\n".join(lines)
 
     scores = score_methods(results)
-    lines.append(f"{len(results)} (pick-window, player) observations, all three methods scored on the identical set.")
-    lines.append("(Brier: 0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time)")
+    lines.append(f"{len(results)} (pick-window, player) observations feed all three methods, but see the")
+    lines.append("decision-band n's below before comparing their Briers -- they are NOT the same sample.")
     lines.append("")
+
+    # Work order 2026-08-24b item 6 (R39): decision leads, raw table follows as
+    # supporting evidence -- the reverse of this report's original order, to match
+    # decide_availability_method's own reasoning (capacity first, Brier second).
+    chosen, reason = decide_availability_method(scores)
+    lines.append(f"Decision: {reason}")
+    lines.append(f"-> AVAILABILITY_METHOD = \"{chosen}\"")
+    lines.append("")
+
+    lines.append("Supporting evidence (Brier: 0 = perfect, 0.25 = always guessing 50%, 1.0 = confidently wrong every time):")
     lines.append(f"{'method':12s} {'overall_brier':>14s} {'decision_band_brier':>20s} {'decision_band_n':>16s}")
     for method in METHODS:
         s = scores[method]
         lines.append(f"{method:12s} {s['overall_brier']:14.4f} {s['decision_band_brier']:20.4f} {s['decision_band_n']:16d}")
-    lines.append(f"(decision band = predicted in {DECISION_BAND})")
-    lines.append("")
-
-    chosen, reason = decide_availability_method(scores)
-    lines.append(f"Owner's rule applied: {reason}")
-    lines.append(f"-> AVAILABILITY_METHOD = \"{chosen}\"")
+    lines.append(f"(decision band = predicted in {DECISION_BAND}; the three decision_band_n's differ because band")
+    lines.append(" membership is defined by each method's own predictions -- these Briers are not directly comparable)")
     lines.append("")
 
     for method in METHODS:

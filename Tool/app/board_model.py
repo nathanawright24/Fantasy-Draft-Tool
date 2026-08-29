@@ -43,7 +43,19 @@ CLOSE_THRESHOLD = 0.40   # between the two, it is a coin flip
 GONE_THRESHOLD = 0.15    # below this he will not reach you at all
 ROUTE_LEGS = 3           # owner's answer: project three picks ahead
 BOARD_ROWS = 36          # three rounds of players visible
-N_SIMS_UI = 2000         # the band on the odds is the spread across these runs
+# Work order 2026-08-24b item 3 (R38): reads config.AVAILABILITY_N_SIMS rather than a
+# second hardcoded literal -- this and config's copy had drifted into agreement (both
+# 2000) by coincidence, not by construction, before this file existed. "Keep the count
+# in config.py" per the work order: this is that, made structural instead of just true
+# today.
+N_SIMS_UI = config.AVAILABILITY_N_SIMS  # the band on the odds is the spread across these runs
+# Work order 2026-08-24b item 2: candidates_for_pick's near-equal tiebreak band, in
+# whole PPR points -- the unit `edge`/`vorp` are already denominated in, not a fitted
+# constant. Two candidates within one point of each other are treated as tied on
+# value and broken by intel/sharp-market signal; anything wider is decided on edge
+# alone, which is what stops a window-mismatched intel tag from outranking a
+# materially better player (the reported Chase Brown / Ja'Marr Chase bug).
+EDGE_TIE_BAND_POINTS = 1.0
 
 # Sleeper's own position colours, so the board matches the draft room.
 POSITION_COLORS = {"QB": "#fc2b6d", "RB": "#73c3a6", "WR": "#46a2ca", "TE": "#cc8c4a"}
@@ -130,6 +142,31 @@ def survival_between(row: pd.Series, from_pick: int, to_pick: int) -> float:
     return float(np.clip(s_to / s_from, 0.005, 0.995))
 
 
+def _survival_between_vectorized(
+    pool: pd.DataFrame, from_pick: int, to_pick: int, fit: tuple | None = None
+) -> np.ndarray:
+    """Work order 2026-08-24b item 3: the same probability as `survival_between`, for
+    every row of `pool` at once -- two scipy calls total (one per pick number) instead
+    of two scipy calls PER ROW, which is what made `candidates_for_pick`'s
+    `pool.iterrows()` loop the dominant cost of a route rebuild (~430 rows x 2 calls,
+    invoked once per route plus once per leg, ~10 times a render). `fit`, if given, is
+    the (mu_arr, sigma_arr, has_fit) triple from `de._lognormal_fit_arrays(pool)`,
+    reused so a caller needing both an availability AND a wait probability from the
+    same pool fits each player's curve only once instead of twice.
+    """
+    mu_arr, sigma_arr, has_fit = fit if fit is not None else de._lognormal_fit_arrays(pool)
+    out = np.full(len(pool), 0.5)
+    if has_fit.any():
+        mu, sigma = mu_arr[has_fit], sigma_arr[has_fit]
+        scale = np.exp(mu)
+        s_from = lognorm.sf(max(from_pick, 1e-6), s=sigma, scale=scale)
+        s_to = lognorm.sf(max(to_pick, 1e-6), s=sigma, scale=scale)
+        safe_from = np.where(s_from <= 1e-9, 1.0, s_from)
+        ratio = np.clip(s_to / safe_from, 0.005, 0.995)
+        out[has_fit] = np.where(s_from <= 1e-9, 0.005, ratio)
+    return out
+
+
 @dataclass
 class Timing:
     word: str      # NOW | CLOSE | WAIT | GONE
@@ -191,6 +228,10 @@ def availability_with_band(
     computed from the SAME simulation run -- exposed as `survival_probability_wait` plus
     its own band -- so the wait rule and the primary board number can never disagree
     about which method produced them, only about which pick they're asking about.
+
+    Always requests `edge` too (work order 2026-08-24b items 2+4) -- from the SAME
+    simulation pass, so this never doubles the montecarlo cost. `candidates_for_pick`
+    reads it off the board this function returns instead of raw `vorp`.
     """
     out = de.compute_availability(
         board,
@@ -202,6 +243,7 @@ def availability_with_band(
         owner_roster_by_manager=owner_roster_by_manager,
         n_sims=n_sims,
         wait_pick=wait_pick,
+        want_edge=True,
     )
     p = out["survival_probability"].clip(0, 1)
     out["survival_band"] = np.sqrt((p * (1 - p)) / n_sims) * 1.96
@@ -243,51 +285,89 @@ def candidates_for_pick(
 ) -> pd.DataFrame:
     """Who is worth spending `pick` on.
 
-    Ordering is the owner's stated preference: his own intel names for that exact pick
-    first, in the priority order he wrote, then whoever the sharp market takes earliest
-    relative to Sleeper. That fallback is what fills the routes at picks where the
-    intel list runs thin, which it does from about round 12 onward.
+    Sorted on VALUE first (work order 2026-08-24b item 2, fixing "the route sorter
+    never looks at value"): `edge` (item 4's drop-off-adjusted vorp -- vorp net of how
+    much of that position's value is expected to survive to the owner's own next turn
+    anyway), read straight off `pool`'s `edge` column rather than recomputed here. The
+    old sort put `on_list`/`priority` FIRST, which meant a player absent from the intel
+    table (on_list=False) sorted below every intel-tagged name regardless of being the
+    best player on the board, and a name tagged for a DIFFERENT pick window still
+    carried its priority number everywhere else (Chase Brown, tagged priority 1 for
+    window 20, outranking Ja'Marr Chase at pick 5) -- the intel cap's whole point,
+    bounding intel's influence, defeated through a side door that never touched
+    composite_score at all.
 
-    Anyone at or above WAIT_THRESHOLD to survive to `next_after` is dropped, and
-    anyone below `min_availability` to even reach `pick` is dropped.
+    Intel now only matters as a TIEBREAK among near-equal `edge` values (within
+    EDGE_TIE_BAND_POINTS of each other) and only when `pick` is inside the row's own
+    `intel_windows` -- outside that window, `priority` reads exactly like a non-intel
+    player's (99.0), never as a boost for a pick it wasn't written for. `on_list`
+    itself still reflects the window check for display ("Your note" in cockpit_html).
+
+    `hard_avoid` remains a hard filter, unrelated to any of the above. Anyone at or
+    above WAIT_THRESHOLD to survive to `next_after` is dropped, and anyone below
+    `min_availability` to even reach `pick` is dropped.
+
+    Vectorized (work order 2026-08-24b item 3): the two `survival_between` calls per
+    row -- ~430 rows x 2 scipy calls, invoked once per route plus once per leg (~10
+    times a render) -- were the dominant cost of a route rebuild. Both are now one
+    scipy call each over the WHOLE pool (`_survival_between_vectorized`, curve-fit
+    shared between the two calls), with only the small SURVIVING subset ever touched
+    row-by-row again (intel-window parsing, attaching each match's full board row for
+    `build_routes`' anchor path). Equivalence with the original per-row loop is
+    covered by tests/test_core.py.
     """
-    rows = []
-    for _, r in pool.iterrows():
-        if r["player"] in used:
-            continue
-        if shape.get(r["position"], 0) <= 0:
-            continue
-        if r.get("intel_tag") == "hard_avoid":
-            continue
-        avail = 1.0 if from_pick == pick else survival_between(r, from_pick, pick)
-        if avail < min_availability:
-            continue
-        wait = survival_between(r, pick, next_after)
-        if wait >= WAIT_THRESHOLD:
-            continue
-        on_list = r.get("intel_tag") == "target" and pick in _intel_windows(r)
-        rows.append(
-            {
-                "player": r["player"],
-                "position": r["position"],
-                "on_list": bool(on_list),
-                "priority": float(r.get("intel_priority")) if not pd.isna(r.get("intel_priority")) else 99.0,
-                "composite_score": float(r["composite_score"]),
-                "vorp": float(r.get("vorp") or 0.0),
-                "sharp_edge": sharp_edge(r) or 0.0,
-                "availability": avail,
-                "wait": wait,
-                "row": r,
-            }
-        )
-    if not rows:
-        return pd.DataFrame(columns=["player", "position", "on_list", "priority"])
-    out = pd.DataFrame(rows)
-    # Intel names first by the priority the owner wrote, then the sharp market's price gap.
+    if pool.empty:
+        return pd.DataFrame(columns=["player", "position", "on_list", "priority", "edge"])
+
+    fit = de._lognormal_fit_arrays(pool)
+    avail_arr = np.ones(len(pool)) if from_pick == pick else _survival_between_vectorized(pool, from_pick, pick, fit)
+    wait_arr = _survival_between_vectorized(pool, pick, next_after, fit)
+
+    positions = pool["position"].to_numpy()
+    intel_tag = pool["intel_tag"] if "intel_tag" in pool.columns else pd.Series(np.nan, index=pool.index)
+    shape_ok = np.array([shape.get(p, 0) > 0 for p in positions])
+    mask = (
+        ~pool["player"].isin(used).to_numpy()
+        & shape_ok
+        & (intel_tag != "hard_avoid").to_numpy()
+        & (avail_arr >= min_availability)
+        & (wait_arr < WAIT_THRESHOLD)
+    )
+    if not mask.any():
+        return pd.DataFrame(columns=["player", "position", "on_list", "priority", "edge"])
+
+    sub = pool[mask]
+    sub_intel_tag = intel_tag[mask]
+    sub_intel_priority = sub["intel_priority"] if "intel_priority" in sub.columns else pd.Series(np.nan, index=sub.index)
+    in_window = sub.apply(lambda r: pick in _intel_windows(r), axis=1)
+    on_list = (sub_intel_tag == "target") & in_window
+    priority = np.where(in_window & sub_intel_priority.notna(), sub_intel_priority.astype(float), 99.0)
+    vorp = sub.get("vorp", pd.Series(0.0, index=sub.index)).fillna(0.0)
+    edge_col = sub["edge"] if "edge" in sub.columns else pd.Series(np.nan, index=sub.index)
+    edge = edge_col.where(edge_col.notna(), vorp).to_numpy()
+    divergence = sub.get("adp_rank_divergence", pd.Series(np.nan, index=sub.index))
+    sharp = np.where(divergence.notna(), -divergence.astype(float), 0.0)
+
+    out = pd.DataFrame({
+        "player": sub["player"].to_numpy(),
+        "position": sub["position"].to_numpy(),
+        "on_list": on_list.to_numpy(),
+        "priority": priority,
+        "composite_score": sub["composite_score"].astype(float).to_numpy(),
+        "edge": edge,
+        "vorp": vorp.to_numpy(),
+        "sharp_edge": sharp,
+        "availability": avail_arr[mask],
+        "wait": wait_arr[mask],
+        "row": [sub.iloc[i] for i in range(len(sub))],
+    })
+    # Coarser than `edge` itself: two candidates within one band are "near-equal" on
+    # value, so intel/sharp-market breaks the tie; a wider gap is decided on edge alone.
+    out["_edge_tier"] = np.floor(out["edge"] / EDGE_TIE_BAND_POINTS)
     return out.sort_values(
-        by=["on_list", "priority", "sharp_edge", "composite_score"],
-        ascending=[False, True, False, False],
-    ).reset_index(drop=True)
+        by=["_edge_tier", "on_list", "priority", "sharp_edge", "composite_score"],
+        ascending=[False, False, True, False, False],
+    ).drop(columns=["_edge_tier"]).reset_index(drop=True)
 
 
 def build_route(anchor: pd.Series, remaining: dict, pool: pd.DataFrame, schedule: list[int], this_pick: int) -> dict:

@@ -44,10 +44,12 @@ COCKPIT_COLUMNS = [
     ("player", "Player", "left", None),
     ("sharp", "Sharp", "right", 60),
     ("value", "Value", "right", 66),
-    ("avail", "At {target}", "right", 84),
+    # Work order 2026-08-24b item 5 (R39): merged with the old separate "Timing"
+    # column. The chip is now the primary reading and the percentage a small
+    # secondary annotation -- see the cell-building code below for why.
+    ("avail", "At {target}", "right", 96),
     ("vorp", "Over repl", "right", 68),
     ("factors", "Factors", "right", 62),
-    ("timing", "Timing", "center", 58),
     ("note", "Your note", "left", None),
 ]
 
@@ -167,7 +169,6 @@ def render_board(
         pos = r["position"]
         pos_color = bm.POSITION_COLORS.get(pos, t["muted"])
         avail = float(r["survival_probability"])
-        band = int(r.get("survival_band_pts") or 0)
         # Same simulation run as `avail`, not a separate lognormal estimate (work order
         # 2026-08-24 item 2 / R30) -- falls back to the lognormal helper only if the
         # caller never asked compute_availability for a wait_pick checkpoint at all.
@@ -195,13 +196,21 @@ def render_board(
             f'{"" if edge is None else ("+" if edge > 0 else "") + str(int(edge))}</td>',
             f'<td style="text-align:right;font-weight:600;color:{_heat(r["composite_score"], 15, 45, t)}" '
             f'class="nk-num">{r["composite_score"]:.1f}</td>',
-            f'<td style="text-align:right;color:{_heat(avail, .35, .8, t)}" class="nk-num">{avail*100:.0f}%'
-            f'<span style="color:{t["faint"]};font-size:11px"> {"&plusmn;" + str(band) if band else ""}</span></td>',
+            # Work order 2026-08-24b item 5 (R39): the chip is the primary reading here,
+            # the percentage a small secondary annotation -- decision-band Brier says
+            # NOW/CLOSE/WAIT/GONE is roughly the resolution this model has earned, and a
+            # bare "45%" invited reading precision into it the model doesn't have. The
+            # +-1-point simulation-convergence band that used to sit next to the
+            # percentage is dropped entirely, not just de-emphasized: it measured
+            # whether the simulation converged, not whether the model is right, and
+            # printing it next to the real decision-band error claimed a precision that
+            # does not exist.
+            f'<td style="text-align:right" class="nk-num">{_timing_chip(tm, t)}'
+            f'<span style="color:{t["faint"]};font-size:10px;margin-left:5px">{avail*100:.0f}%</span></td>',
             f'<td style="text-align:right;color:{_heat(r.get("vorp"), 0, 30, t)}" class="nk-num">'
             f'{"" if pd.isna(r.get("vorp")) else ("+" if r["vorp"] >= 0 else "") + f"{r['vorp']:.0f}"}</td>',
             f'<td style="text-align:right;color:{_heat(r.get("factor_score_recomputed"), 0, 20, t)}" '
             f'class="nk-num">{"none" if pd.isna(r.get("factor_score_recomputed")) else int(r["factor_score_recomputed"])}</td>',
-            f'<td style="text-align:center">{_timing_chip(tm, t)}</td>',
             f'<td style="color:{note_color};font-size:12px">{html.escape(note)}</td>',
         ]
         body.append("<tr>" + "".join(cells) + "</tr>")

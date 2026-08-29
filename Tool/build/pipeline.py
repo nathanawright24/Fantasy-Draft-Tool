@@ -20,6 +20,7 @@ Stages, in order:
   8. compute_manager_priors                 -- from historical picks, not hand-transcribed
   9. compute_team_bias                        -- ditto
   10. build_player_master                       -- final join -> player_master.csv
+  10.5. compute_sleeper_name_crosswalk            -- sleeper_name_key -> master name_key (work order 2026-08-24b item 1)
   11. compute_adp_source_offsets                  -- Sleeper vs NFFC divergence by position (work order item 1)
   12. validate_top_adp_coverage                     -- top-150-by-either-source join is a hard failure (work order item 2)
   13. validate_and_report                             -- join_report.txt, pass/fail summary
@@ -156,35 +157,13 @@ def print_bonus_calibration(props_all: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 # Stage 3: factor-grid priors, team backfill (spec Section 5 rule #2)
 # ---------------------------------------------------------------------------
-# Known nickname-vs-full-name mismatches between other sources and the props files
-# (which set the canonical name_key everything else joins onto). Every entry maps the
-# OTHER source's normalized spelling -> props' spelling. Verified against both source
-# rows before adding -- both sides of each mapping were confirmed to be the same real
-# person, same team, same position. Not a guess: a bounded, documented build-layer
-# correction (spec/CLAUDE.md's own stated escape hatch for exactly this situation).
-#
-# "chig okonkwo"/"cam ward": factor-grid priors use a nickname, props use the full name.
-# "kenneth walker" / "cameron skattebo" / "kenny gainwell": ADP-side nickname
-# mismatches against props' spelling, found via work order 2026-08-16 item 2's
-# reclassified severity (any top-150-by-either-source player with no market join is
-# now a hard failure, not a note -- this audit is what surfaced all three). Each is a
-# single source disagreeing with props + the OTHER source: Sleeper writes "Kenneth
-# Walker III" and "Cameron Skattebo" where NFFC agrees with props' "Ken Walker III" /
-# "Cam Skattebo"; NFFC writes "Gainwell, Kenny" where props and Sleeper agree on
-# "Kenneth Gainwell". Applied in `ingest_nffc_adp` / `ingest_sleeper_adp` (not just
-# `load_priors`, where the first two entries below are used), since these are
-# ADP-side mismatches, not priors-side ones.
-NAME_ALIASES = {
-    "chig okonkwo": "chigoziem okonkwo",
-    "cam ward": "cameron ward",
-    "kenneth walker": "ken walker",
-    "cameron skattebo": "cam skattebo",
-    "kenny gainwell": "kenneth gainwell",
-}
-
-
+# Nickname-vs-full-name mismatches (work order 2026-08-24b item 1): the table itself now
+# lives in config.py as config.NAME_ALIASES, shared with app/ as the FALLBACK path for a
+# name the sleeper_name_crosswalk.csv this module emits (see
+# compute_sleeper_name_crosswalk below) doesn't cover. See config.py's own comment for
+# the full per-entry justification.
 def _apply_name_alias(name_key: str, report: JoinReport, context: str) -> str:
-    alias = NAME_ALIASES.get(name_key)
+    alias = config.NAME_ALIASES.get(name_key)
     if alias is None:
         return name_key
     report.note(f"{context}: rekeyed '{name_key}' to '{alias}' via NAME_ALIASES")
@@ -204,7 +183,7 @@ def load_priors(position: str, props_df: pd.DataFrame, report: JoinReport) -> pd
     unresolved = df["name_key"].isin(props_keys) == False  # noqa: E712 (Series identity, not None check)
     for idx in df.index[unresolved]:
         key = df.at[idx, "name_key"]
-        alias = NAME_ALIASES.get(key)
+        alias = config.NAME_ALIASES.get(key)
         if alias and alias in props_keys:
             report.note(
                 f"priors/{position}: rekeyed '{df.at[idx, 'player_name_source']}' to props' "
@@ -309,7 +288,8 @@ def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
         team = config.canonical_team(r["Team"], "sleeper")
         if team is None:
             report.fail(f"sleeper_adp: unmapped team '{r['Team']}' for player '{r['Player']}'")
-        name_key = _apply_name_alias(config.normalize_name(f"{first} {last}"), report, "sleeper_adp")
+        raw_name_key = config.normalize_name(f"{first} {last}")
+        name_key = _apply_name_alias(raw_name_key, report, "sleeper_adp")
         rows.append(
             {
                 "player_display": r["Player"],
@@ -319,6 +299,12 @@ def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
                 "position": pos,
                 "nfl_team": team,
                 "name_key": name_key,
+                # Pre-alias key, e.g. "kenneth walker" where name_key (post-alias) is "ken
+                # walker" -- item 1's crosswalk needs BOTH: this is the spelling the live
+                # Sleeper draft-picks API will actually send, name_key is what player_master
+                # keys on. Only meaningful for source=="Sleeper"; harmless on NFFC rows,
+                # which never feed the crosswalk (see compute_sleeper_name_crosswalk).
+                "sleeper_raw_name_key": raw_name_key,
                 "source": "Sleeper",
                 "adp_value": r["ADP"],
                 "adp_rank": r["ADP"],
@@ -788,6 +774,60 @@ def build_player_master(
 
 
 # ---------------------------------------------------------------------------
+# Stage 9.5: Sleeper name crosswalk (work order 2026-08-24b item 1)
+# ---------------------------------------------------------------------------
+def compute_sleeper_name_crosswalk(ref_df: pd.DataFrame, cmp_df: pd.DataFrame, master: pd.DataFrame, report: JoinReport) -> pd.DataFrame:
+    """sleeper_name_key -> player_master name_key, for every Sleeper ADP row that
+    actually joined a player_master row -- the crosswalk the live sync path
+    (app/draft_state.py) reads BEFORE falling back to config.NAME_ALIASES.
+
+    Sleeper's own ADP ingestion (whichever of ref_df/cmp_df has source=="Sleeper" --
+    normally ref_df, since COMPARISON_ADP is hardcoded to NFFC) already resolves each
+    row's pre-alias key (`sleeper_raw_name_key`) to the post-alias `name_key` that
+    joins onto player_master. This function just captures that resolution instead of
+    throwing it away once player_master.csv is written -- "the ADP file is already an
+    authoritative Sleeper-to-master crosswalk," per the work order.
+
+    Only built when Sleeper is actually one of the two ingested sources: if the league
+    ever runs with an all-NFFC configuration, live Sleeper polling is disabled anyway
+    (main_cockpit.sync_from_sleeper's own is_sleeper gate), so there is nothing for a
+    crosswalk to serve.
+    """
+    cols = ["sleeper_name_key", "master_name_key", "player_display", "position"]
+    sleeper_df = None
+    for candidate in (ref_df, cmp_df):
+        if "source" in candidate.columns and (candidate["source"] == "Sleeper").any():
+            sleeper_df = candidate[candidate["source"] == "Sleeper"]
+            break
+    if sleeper_df is None:
+        report.note("sleeper_name_crosswalk: Sleeper is not an ingested ADP source this build -- crosswalk not built (live Sleeper sync is disabled in this configuration anyway)")
+        return pd.DataFrame(columns=cols)
+
+    master_keys = set(zip(master["name_key"], master["position"]))
+    rows = [
+        {
+            "sleeper_name_key": r["sleeper_raw_name_key"],
+            "master_name_key": r["name_key"],
+            "player_display": r["player_display"],
+            "position": r["position"],
+        }
+        for _, r in sleeper_df.iterrows()
+        if (r["name_key"], r["position"]) in master_keys
+    ]
+    out = pd.DataFrame(rows, columns=cols).drop_duplicates(subset=["sleeper_name_key"])
+    config.DATA_DERIVED.mkdir(parents=True, exist_ok=True)
+    out.to_csv(config.SLEEPER_NAME_CROSSWALK_PATH, index=False)
+    rewritten = out[out["sleeper_name_key"] != out["master_name_key"]]
+    report.note(
+        f"sleeper_name_crosswalk: {len(out)} Sleeper names mapped to a player_master row "
+        f"({len(sleeper_df) - len(out)} Sleeper rows had no player_master match, e.g. players "
+        f"outside config.POSITIONS coverage); {len(rewritten)} of the {len(out)} required a "
+        f"rewrite (normalization or alias difference) rather than an identity match"
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Stage 10: ADP source offsets + top-150 join-coverage validation
 # (work order 2026-08-16 items 1 and 2)
 # ---------------------------------------------------------------------------
@@ -910,6 +950,9 @@ def main() -> int:
 
     print("Building player_master.csv...")
     master = build_player_master(props_all, priors_all, oline_df, ref_df, cmp_df, college_df, intel_df, report)
+
+    print("Building Sleeper name crosswalk...")
+    compute_sleeper_name_crosswalk(ref_df, cmp_df, master, report)
 
     print("Computing ADP source offsets and validating top-150 join coverage...")
     compute_adp_source_offsets(master, report)

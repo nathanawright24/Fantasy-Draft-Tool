@@ -1,10 +1,10 @@
-Join report -- generated 2026-08-24T20:33:06
+Join report -- generated 2026-08-25T06:51:25
 ==============================================================================
 
 HARD FAILURES (0) -- these must be fixed before shipping
 ------------------------------------------------------------------------------
 
-NOTES / FLAGGED (155) -- unmatched names, coverage boundaries,
+NOTES / FLAGGED (156) -- unmatched names, coverage boundaries,
 low-sample flags. Never suppressed; eyeball before trusting a build.
 ------------------------------------------------------------------------------
   - priors/QB: rekeyed 'Cam Ward' to props' 'cameron ward' via NAME_ALIASES -- same real join key from here on, so both the team backfill and the player_master merge pick up the props row
@@ -161,4 +161,5 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - TE: 48 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - WR: 141 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - kickers: 16 K rows added from Sleeper ADP, no props/factor-grid coverage by design (R22) -- excluded from VORP and every route by construction
+  - sleeper_name_crosswalk: 220 Sleeper names mapped to a player_master row (7 Sleeper rows had no player_master match, e.g. players outside config.POSITIONS coverage); 2 of the 220 required a rewrite (normalization or alias difference) rather than an identity match
   - adp_source_offsets (top 150 by Sleeper rank): QB -13.2 (n=18); RB -2.6 (n=44); TE -23.2 (n=19); WR +9.0 (n=56) -- positive means Sleeper ranks that position later than NFFC's mean pick

@@ -1046,3 +1046,332 @@ def test_kicker_suggestion_withheld_once_owner_already_has_one(built):
     )
     recs = de.top_recommendations(board, roster, n=50)
     assert (recs["position"] == "K").sum() == 0
+
+
+# ---------------------------------------------------------------------------
+# 13. Work order 2026-08-24b item 1: Sleeper name resolution reaches the live sync
+#     path. Reproduces the exact reported bug (Kenneth Walker stayed on the board
+#     after being drafted) end to end, through the real crosswalk build produces.
+# ---------------------------------------------------------------------------
+def test_sleeper_name_crosswalk_is_built_and_covers_the_known_aliases(built):
+    master, _ = built
+    assert config.SLEEPER_NAME_CROSSWALK_PATH.exists()
+    crosswalk = pd.read_csv(config.SLEEPER_NAME_CROSSWALK_PATH)
+    assert len(crosswalk) > 0
+    table = dict(zip(crosswalk["sleeper_name_key"], crosswalk["master_name_key"]))
+    # Every known alias that Sleeper's OWN ADP pull actually carries this year should
+    # show up as a rewrite in the crosswalk, not just in config.NAME_ALIASES.
+    rewrites = crosswalk[crosswalk["sleeper_name_key"] != crosswalk["master_name_key"]]
+    assert len(rewrites) > 0
+    assert table.get("kenneth walker") == "ken walker"
+
+
+def test_resolve_sleeper_name_key_fixes_the_kenneth_walker_bug(built, monkeypatch):
+    # The exact reported symptom, at the resolver level: config.normalize_name alone
+    # produces the wrong key; resolve_sleeper_name_key (crosswalk-first) produces the
+    # one player_master actually uses.
+    monkeypatch.setattr(draft_state, "_crosswalk_cache", None)
+    wrong_key = config.normalize_name("Kenneth Walker III")
+    resolved_key = draft_state.resolve_sleeper_name_key("Kenneth Walker III")
+    assert wrong_key == "kenneth walker"
+    assert resolved_key == "ken walker"
+    master, _ = built
+    assert resolved_key in set(master["name_key"])
+    assert wrong_key not in set(master[master["position"] == "RB"]["name_key"])
+
+
+def test_sync_of_kenneth_walker_removes_him_from_the_available_board(built, tmp_path, monkeypatch):
+    # End-to-end acceptance check for item 1: a live Sleeper pick spelled the way
+    # Sleeper actually spells it must remove that player from `available`, the same
+    # board main_cockpit.py filters for the cockpit and full-board views.
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(draft_state, "_crosswalk_cache", None)
+    master, _ = built
+    board = de.compute_composite(master)
+
+    state = draft_state.load_state("draftA")
+    key = draft_state.resolve_sleeper_name_key("Kenneth Walker III")
+    row_match = board[board["name_key"] == key]
+    assert len(row_match) == 1, "Ken Walker III must have exactly one player_master row"
+    row = row_match.iloc[0]
+    draft_state.add_pick(state, "draftA", row)
+
+    available = board[~board["name_key"].isin(draft_state.drafted_name_keys(state))]
+    assert key not in set(available["name_key"])
+    assert "Ken Walker III" in {p["player"] for p in state["picks"]}
+
+
+def test_unmatched_sync_name_is_logged_and_surfaced(built, tmp_path, monkeypatch):
+    # Task 2's acceptance check: an unmatched Sleeper pick must be loud, not a silent
+    # bare-Series fallback. Drives main_cockpit.sync_from_sleeper directly against a
+    # fabricated poll result naming a player nothing in this build can match -- a
+    # plain dict stands in for st.session_state (every op sync_from_sleeper performs
+    # on it -- __getitem__/__setitem__/.get/.setdefault -- is dict-native). A FOURTH
+    # AppTest.from_file() instance in this same pytest process was tried first and
+    # reliably hung past its timeout regardless of length (reproduced with 60s AND
+    # 300s) even though the identical scenario runs in ~1s standalone -- an AppTest
+    # test-harness accumulation issue across repeated instances in one process, not a
+    # behavior of the app itself (test_streamlit_app_smoke and the two
+    # compute_board_cache tests, the first three AppTest instances in this file, all
+    # pass every time). This covers the same acceptance check without tripping it.
+    import main_cockpit
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(draft_state, "_crosswalk_cache", None)
+    monkeypatch.setattr(main_cockpit.st, "session_state", {})
+
+    master, _ = built
+    board = de.compute_composite(master)
+    state = draft_state.load_state("draftA")
+
+    fake_pick = {"overall": 1, "round": 1, "player": "Totally Fictional Player",
+                 "position": "WR", "nfl_team": "FA", "manager": "Nathan", "draft_slot": 5}
+    monkeypatch.setattr(main_cockpit.sleeper_client, "poll_new_picks", lambda draft_id, known: [fake_pick])
+
+    landed = main_cockpit.sync_from_sleeper(state, "draftA", board)
+
+    assert landed == 1
+    assert main_cockpit.st.session_state["sync_unmatched"] == ["Totally Fictional Player"]
+    log_text = config.UNMATCHED_SYNC_LOG_PATH.read_text(encoding="utf-8")
+    assert "Totally Fictional Player" in log_text
+    assert "draft=draftA" in log_text
+    # The pick still lands (loud, not blocked) under its raw name, so roster counts
+    # keep moving even for a name the board couldn't resolve.
+    assert state["picks"][0]["player"] == "Totally Fictional Player"
+
+    # "On screen" half of the acceptance check: main()'s warning banner is gated on
+    # exactly this session_state key and names the log file -- verified by direct
+    # source inspection rather than a 4th AppTest instance (see comment above), and
+    # separately confirmed by one standalone interactive run (reported alongside this
+    # test's results, not re-run here).
+    main_source = (TOOL_ROOT / "app" / "main_cockpit.py").read_text(encoding="utf-8")
+    assert 'st.session_state.get("sync_unmatched")' in main_source
+    assert "st.warning(" in main_source
+
+
+# ---------------------------------------------------------------------------
+# 14. Work order 2026-08-24b item 3: candidates_for_pick and _lognormal_fit_arrays
+#     vectorized, AVAILABILITY_N_SIMS cut 2000 -> 500, availability cached per render.
+# ---------------------------------------------------------------------------
+def test_lognormal_fit_arrays_matches_the_original_per_row_computation(built):
+    # The vectorized fit (draft_engine.py) must produce IDENTICAL mu/sigma/has_fit to
+    # the original per-row loop -- reconstructed here from the still-present per-row
+    # primitives (_fit_lognormal_from_adp / _resolve_survival_sources), which the
+    # vectorized version does not remove or change.
+    master, _ = built
+    board = de.compute_composite(master)
+
+    def _reference(pool):
+        n = len(pool)
+        mu_arr, sigma_arr, has_fit = np.zeros(n), np.zeros(n), np.zeros(n, dtype=bool)
+        for i, row in enumerate(pool.to_dict("records")):
+            params = de._fit_lognormal_from_adp(*de._resolve_survival_sources(row))
+            if params is not None:
+                mu_arr[i], sigma_arr[i], _ = params
+                has_fit[i] = True
+        return mu_arr, sigma_arr, has_fit
+
+    ref_mu, ref_sigma, ref_fit = _reference(board)
+    new_mu, new_sigma, new_fit = de._lognormal_fit_arrays(board)
+    assert ref_fit.sum() > 0, "sanity: at least some rows should have a real ADP fit"
+    assert (ref_fit == new_fit).all()
+    assert np.allclose(ref_mu[ref_fit], new_mu[ref_fit])
+    assert np.allclose(ref_sigma[ref_fit], new_sigma[ref_fit])
+
+
+def test_survival_between_vectorized_matches_the_per_row_version(built):
+    master, _ = built
+    board = de.compute_composite(master)
+    got = bm._survival_between_vectorized(board, 44, 53)
+    expected = np.array([bm.survival_between(r, 44, 53) for _, r in board.iterrows()])
+    assert np.allclose(got, expected)
+
+
+def test_candidates_for_pick_vectorized_matches_a_row_by_row_reference(built):
+    # candidates_for_pick was rewritten to vectorize its two survival_between calls
+    # (item 3) on top of the item 2/4 sort change -- this pins the FILTERING behavior
+    # (which players survive shape/hard_avoid/availability/wait cuts) against a
+    # reference loop built from the same primitives, independent of sort order.
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board = bm.availability_with_band(
+        board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={},
+    )
+
+    def _reference(pool, pick, from_pick, next_after, shape, used, min_availability):
+        rows = []
+        for _, r in pool.iterrows():
+            if r["player"] in used or shape.get(r["position"], 0) <= 0 or r.get("intel_tag") == "hard_avoid":
+                continue
+            avail = 1.0 if from_pick == pick else bm.survival_between(r, from_pick, pick)
+            if avail < min_availability:
+                continue
+            wait = bm.survival_between(r, pick, next_after)
+            if wait >= bm.WAIT_THRESHOLD:
+                continue
+            rows.append(r["player"])
+        return set(rows)
+
+    shape = {"QB": 1, "RB": 3, "WR": 4, "TE": 1}
+    expected = _reference(board, 53, 44, 68, shape, set(), 0.5)
+    got = set(bm.candidates_for_pick(board, 53, 44, 68, shape, set(), 0.5)["player"])
+    assert got == expected
+    assert len(got) > 0
+
+
+def test_n_sims_ui_reads_config_not_a_second_literal():
+    # Work order 2026-08-24b item 3 (R38): the two constants (config.AVAILABILITY_N_SIMS,
+    # board_model.N_SIMS_UI) had drifted into agreement (both 2000) by coincidence, not
+    # by construction -- board_model.N_SIMS_UI must now be config's value, structurally.
+    assert bm.N_SIMS_UI is config.AVAILABILITY_N_SIMS
+    assert config.AVAILABILITY_N_SIMS == 500
+
+
+def test_compute_board_cache_hits_on_repeat_and_misses_on_a_new_pick(built, tmp_path, monkeypatch):
+    # Item 3 task 1's acceptance mechanism: a rerun with the SAME
+    # (drafted_name_keys, as_of_pick, target_pick, wait_pick) must not re-run the
+    # simulation at all; a rerun where drafted_name_keys changed (a real new pick) must.
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    setup = draft_setup.default_setup()
+    setup["sleeper_draft_id"] = "draftCache"
+    draft_setup.save_setup(setup)
+
+    at = AppTest.from_file(str(TOOL_ROOT / "app" / "main_cockpit.py"), default_timeout=60)
+    at.run()
+    assert not at.exception
+    assert len(at.session_state["board_cache"]) == 1
+    first_board = next(iter(at.session_state["board_cache"].values()))
+
+    # A plain rerun with nothing new must reuse the exact same cached object.
+    at.run()
+    assert not at.exception
+    assert len(at.session_state["board_cache"]) == 1
+    assert next(iter(at.session_state["board_cache"].values())) is first_board
+
+    # A real new pick landing must produce a DIFFERENT cache entry (old one evicted,
+    # since only one live board is ever useful -- see compute_board's own docstring).
+    import sleeper_client
+    fake_pick = {"overall": 1, "round": 1, "player": "Jahmyr Gibbs", "position": "RB",
+                 "nfl_team": "DET", "manager": "Dylan", "draft_slot": 1}
+    monkeypatch.setattr(sleeper_client, "poll_new_picks", lambda draft_id, known: [fake_pick] if 1 not in known else [])
+    sync_button = next(b for b in at.button if b.label == "Sync now")
+    sync_button.click().run()
+    assert not at.exception
+    assert len(at.session_state["board_cache"]) == 1
+    assert next(iter(at.session_state["board_cache"].values())) is not first_board
+
+
+def test_compute_board_cache_is_cleared_on_setup_save(built, tmp_path, monkeypatch):
+    # roster_target/layers/owner all change compute_board's result for the SAME
+    # (drafted_name_keys, as_of_pick, target_pick, wait_pick) key -- a setup save must
+    # invalidate the cache even when the draft_id itself didn't change.
+    from streamlit.testing.v1 import AppTest
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path)
+    at = AppTest.from_file(str(TOOL_ROOT / "app" / "main_cockpit.py"), default_timeout=60)
+    at.run()  # setup screen (no draft_setup.json yet)
+    assert not at.exception
+
+    submit = next(b for b in at.button if b.label == "Save and continue")
+    submit.click().run()
+    assert not at.exception
+    assert len(at.session_state["board_cache"]) == 1
+
+    open_setup = next(b for b in at.button if b.label == "Setup")
+    open_setup.click().run()
+    submit2 = next(b for b in at.button if b.label == "Save and continue")
+    submit2.click().run()
+    assert not at.exception
+    # The resubmit clears the cache and the very next render repopulates it -- what
+    # matters is that it is a FRESH entry, not the pre-resubmit one.
+    assert len(at.session_state["board_cache"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# 15. Work order 2026-08-24b item 5: NOW/CLOSE/WAIT/GONE chip primary, percentage
+#     secondary, +-1 confidence band dropped from the rendered board.
+# ---------------------------------------------------------------------------
+def test_board_row_leads_with_the_timing_chip_and_drops_the_confidence_band(built):
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board = bm.availability_with_band(
+        board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={}, wait_pick=68,
+    )
+    words = {}
+    for _, r in board.iterrows():
+        tm = bm.timing(float(r["survival_probability_wait"]), 68, float(r["survival_probability"]))
+        words.setdefault(tm.word, r)
+    assert "CLOSE" in words and "WAIT" in words, "fixture window should produce at least one of each"
+
+    import cockpit_html as ch
+    for word in ("CLOSE", "WAIT"):
+        single = pd.DataFrame([words[word]])
+        rendered = ch.render_board(single, target_pick=53, wait_reference=68, on_clock=False,
+                                    pick_lines={}, theme=ch.THEME_DARK, rows=1)
+        assert f">{word}<" in rendered  # the chip renders
+        assert "&plusmn;" not in rendered  # the +-N confidence band is gone, not just smaller
+        assert "%" in rendered  # the percentage still renders, as the secondary annotation
+
+
+def test_cockpit_columns_has_no_separate_timing_column():
+    # The old design had "At {target}" (percentage) and "Timing" (chip) as two
+    # separate columns -- item 5 merges them into one (chip primary, percentage
+    # secondary), so a standalone "Timing" column must not still exist alongside it.
+    import cockpit_html as ch
+    keys = [key for key, *_ in ch.COCKPIT_COLUMNS]
+    assert "timing" not in keys
+    assert "avail" in keys
+
+
+# ---------------------------------------------------------------------------
+# 16. Work order 2026-08-24b item 6: the bake-off's decision-band Briers are computed
+#     on different observation counts (band membership depends on each method's own
+#     predictions), so the "18% gap" was never a sound comparison. The reasoning
+#     should lead with the capacity invariant and treat Brier as supporting evidence.
+# ---------------------------------------------------------------------------
+def test_decide_availability_method_leads_with_capacity_not_the_brier_gap(built):
+    results, _ = backtest.run_backtest(n_sims=50, seed=0)
+    scores = backtest.score_methods(results)
+    chosen, reason = backtest.decide_availability_method(scores)
+    # The decision itself is explicitly unchanged (work order 2026-08-24b item 6:
+    # "This does not change the R36 decision").
+    assert chosen == "montecarlo"
+    assert "capacity" in reason.lower()
+    assert "R20/R21" in reason
+    # The reason must name the actual per-method n's, not just assert a percentage
+    # gap -- that is what makes the report say why the comparison is weak.
+    for method in backtest.METHODS:
+        assert f"n={scores[method]['decision_band_n']}" in reason
+
+
+def test_decision_band_ns_actually_differ_across_methods(built):
+    # The premise item 6 corrects: if these three were ever equal, "the gap is not a
+    # sound comparison" would be the wrong lesson to draw. Confirms the real, current
+    # numbers still show the mismatch the fix is about, rather than asserting it blind.
+    results, _ = backtest.run_backtest(n_sims=50, seed=0)
+    scores = backtest.score_methods(results)
+    ns = {method: scores[method]["decision_band_n"] for method in backtest.METHODS}
+    assert len(set(ns.values())) > 1, f"expected decision_band_n to differ across methods, got {ns}"
+
+
+def test_availability_method_config_comment_leads_with_capacity():
+    # A literal-string guard against the comment drifting back to Brier-first framing
+    # (the exact defect item 6 reports) -- config.py is read, not config.AVAILABILITY_METHOD.
+    source = (TOOL_ROOT / "config.py").read_text(encoding="utf-8")
+    marker = "AVAILABILITY_METHOD = "
+    comment_block = source[: source.index(marker)]
+    # Only inspect the comment block immediately preceding the assignment, not the
+    # whole file (SURVIVAL_ANCHOR etc. also mention "backtest" earlier in the file).
+    comment_block = comment_block[comment_block.rindex("# Work order 2026-08-24 item 1"):]
+    capacity_pos = comment_block.lower().find("capacity")
+    brier_pos = comment_block.lower().find("brier")
+    assert capacity_pos != -1 and brier_pos != -1
+    assert capacity_pos < brier_pos, "the comment must mention capacity before it mentions Brier"
