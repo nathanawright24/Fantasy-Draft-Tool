@@ -86,6 +86,17 @@ ALL_DRAFT_PICKS_PATH = DATA_DRAFTS / "all_draft_picks_2022-2025.csv"
 DATA_RAW = TOOL_ROOT / "data" / "raw"
 NFFC_ADP_RAW_PATH = DATA_RAW / "ADP.tsv"
 SLEEPER_ADP_RAW_GLOB = "sleeper_adp_ppr_*.csv"
+# Work order 2026-08-29b item 2 / 2026-08-29 item 0 (R42): a build against a stale
+# Sleeper pull must fail loudly, not silently -- the exact defect that let the 08-16
+# file ride along for two weeks next to a correct 08-29 file nobody re-ran the pipeline
+# against. 3 days: this repo's own convention (config.py's own comment above) is to
+# re-scrape "on draft morning," so during active prep a file older than a few days
+# means someone forgot to refresh it, not that the season is between scrapes.
+ADP_STALENESS_MAX_DAYS = 3
+
+# Work order 2026-08-29 item 4 (R40): declarative column-mapping layer for ADP
+# ingestion -- a new source needs a YAML file here, not a new Python function.
+ADP_SOURCE_MAPPINGS_DIR = DATA_RAW / "adp_sources"
 
 # Owner-authored intel, refreshed each season; template for future years documented in
 # its own header (work order 2026-08-16 item 3).

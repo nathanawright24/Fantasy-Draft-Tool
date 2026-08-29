@@ -23,6 +23,7 @@ sys.path.insert(0, str(_APP_DIR))  # for sibling imports -- Streamlit's exec() d
 # the script's own directory on sys.path the way a plain `python file.py` invocation does.
 import config  # noqa: E402
 import draft_engine as de  # noqa: E402
+import draft_setup  # noqa: E402
 import draft_state  # noqa: E402
 import sleeper_client  # noqa: E402
 
@@ -207,9 +208,15 @@ SEVERITY_ICON = {"High": "\U0001f534", "Medium": "\U0001f7e1", "Low": "⚪"}
 def render_recommender(board: pd.DataFrame, state: dict, owner_drift: pd.DataFrame) -> None:
     st.subheader("My Team / Recommender")
     roster = draft_state.owner_roster_state(state)
-    laporta_available = config.normalize_name("Sam LaPorta") not in draft_state.drafted_name_keys(state)
+    # Work order 2026-08-29 item 3 (R39): reads the setup screen's own field, same as
+    # main_cockpit.py -- no player name hard-coded here. draft_setup.load_setup()
+    # merges cleanly onto factory defaults even if this process never wrote one.
+    fork_player_name = draft_setup.te1_fork_player(draft_setup.load_setup())
+    fork_player_available = bool(fork_player_name) and (
+        config.normalize_name(fork_player_name) not in draft_state.drafted_name_keys(state)
+    )
 
-    result = de.evaluate_pick(board, roster, laporta_available, owner_drift)
+    result = de.evaluate_pick(board, roster, fork_player_available, owner_drift, fork_player_name=fork_player_name)
 
     st.markdown("**Roster vs. target**")
     summary_df = pd.DataFrame(result["roster_summary"]).T

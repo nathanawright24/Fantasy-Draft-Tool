@@ -4,3 +4,4 @@ scipy
 streamlit
 requests
 pytest
+pyyaml

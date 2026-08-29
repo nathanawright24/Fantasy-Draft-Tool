@@ -34,6 +34,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 from scipy.stats import lognorm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -276,9 +277,55 @@ def ingest_nffc_adp(report: JoinReport) -> pd.DataFrame:
     return df
 
 
-def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
-    path = config.latest_sleeper_adp_raw_path()
+def _assert_sleeper_freshness(raw: pd.DataFrame, path: Path, report: JoinReport) -> None:
+    """Work order 2026-08-29b item 2 / 2026-08-29 item 0 (R42): a build against a stale
+    Sleeper pull must fail loudly. Reads `Date Pulled` straight off the resolved file
+    (not a filename guess) and hard-fails if it is more than
+    config.ADP_STALENESS_MAX_DAYS old -- this is the guard that was missing when the
+    08-16 file rode along, unnoticed, for two weeks next to a correct 08-29 file."""
+    if "Date Pulled" not in raw.columns or raw.empty:
+        report.fail(f"sleeper_adp: {path.name} has no 'Date Pulled' column -- cannot verify freshness")
+        return
+    pulled = pd.to_datetime(raw["Date Pulled"], errors="coerce").dropna()
+    if pulled.empty:
+        report.fail(f"sleeper_adp: {path.name}'s 'Date Pulled' column has no parseable dates")
+        return
+    as_of = pulled.max().date()
+    age_days = (date.today() - as_of).days
+    if age_days > config.ADP_STALENESS_MAX_DAYS:
+        report.fail(
+            f"sleeper_adp: {path.name} is {age_days} days old (Date Pulled={as_of.isoformat()}, "
+            f"today={date.today().isoformat()}) -- exceeds ADP_STALENESS_MAX_DAYS="
+            f"{config.ADP_STALENESS_MAX_DAYS}. Re-scrape before trusting this build."
+        )
+
+
+def ingest_sleeper_adp(report: JoinReport, path: Path | None = None) -> pd.DataFrame:
+    """`path` overrides config.latest_sleeper_adp_raw_path() -- only ever used by tests
+    verifying the staleness guard against a deliberately old file; production always
+    resolves the latest one."""
+    path = path or config.latest_sleeper_adp_raw_path()
     raw = pd.read_csv(path)
+    _assert_sleeper_freshness(raw, path, report)
+    # Schema change (work order 2026-08-29b item 2 / 2026-08-29 item 0, R42): the export
+    # grew from 8 columns to 10, splitting "ADP Rank" out from "ADP" -- they diverge
+    # deeper in the board (row 201: rank 201, ADP 204). The two used to be assigned
+    # from the same column; that was silently wrong the moment the split appeared, not
+    # before. Falls back to "ADP" for the pre-split file shape (defensive, not expected
+    # to matter going forward since the build always resolves the LATEST file).
+    has_adp_rank = "ADP Rank" in raw.columns
+    # "Match Key" (new column, e.g. "jahmyr gibbs|RB") is Sleeper's own pre-normalized,
+    # position-qualified key. NOT used for the core join below: measured against the
+    # real 08-29 file, Sleeper's own normalization strips hyphens with no space
+    # ("jaxon smithnjigba"), where ours replaces them with one ("jaxon smith njigba",
+    # which matches props' spelling) -- substituting it broke exactly the hyphenated
+    # names it was supposed to help with (Smith-Njigba, St.-Brown-style names,
+    # Croskey-Merritt; 3 top-150 hard-failures on first try). Captured here as its own
+    # column instead, so compute_sleeper_name_crosswalk can try it as a FALLBACK
+    # resolution path -- validated against real player_master rows there, which this
+    # function can't do (player_master doesn't exist yet at ingestion time). Other ADP
+    # sources (NFFC) will not supply this column -- ingest_nffc_adp is unaffected.
+    has_match_key = "Match Key" in raw.columns
     rows = []
     for _, r in raw.iterrows():
         pos = config.canonical_position(r["Pos"], "sleeper")
@@ -290,6 +337,11 @@ def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
             report.fail(f"sleeper_adp: unmapped team '{r['Team']}' for player '{r['Player']}'")
         raw_name_key = config.normalize_name(f"{first} {last}")
         name_key = _apply_name_alias(raw_name_key, report, "sleeper_adp")
+        match_key_raw = r.get("Match Key") if has_match_key else None
+        match_key_name = None
+        if pd.notna(match_key_raw) and "|" in str(match_key_raw):
+            candidate = str(match_key_raw).rsplit("|", 1)[0].strip()
+            match_key_name = candidate or None
         rows.append(
             {
                 "player_display": r["Player"],
@@ -305,9 +357,10 @@ def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
                 # keys on. Only meaningful for source=="Sleeper"; harmless on NFFC rows,
                 # which never feed the crosswalk (see compute_sleeper_name_crosswalk).
                 "sleeper_raw_name_key": raw_name_key,
+                "sleeper_match_key_name": match_key_name,
                 "source": "Sleeper",
                 "adp_value": r["ADP"],
-                "adp_rank": r["ADP"],
+                "adp_rank": r["ADP Rank"] if has_adp_rank else r["ADP"],
                 "adp_min": np.nan,
                 "adp_max": np.nan,
                 "adp_n": np.nan,
@@ -319,7 +372,131 @@ def ingest_sleeper_adp(report: JoinReport) -> pd.DataFrame:
     return df
 
 
-ADP_INGESTORS = {"NFFC": ingest_nffc_adp, "Sleeper": ingest_sleeper_adp}
+# ---------------------------------------------------------------------------
+# Declarative ADP ingestion (work order 2026-08-29 item 4 / R40): a new source needs
+# a data/raw/adp_sources/<name>.yml mapping, not a new Python function. The two
+# functions above (ingest_nffc_adp / ingest_sleeper_adp) are kept, UNCHANGED, as the
+# "direct parse" this layer is proven equivalent against -- see
+# test_core.py::test_mapping_layer_reproduces_player_master_byte_identically and
+# ADP_SOURCE_MAPPINGS_DIR's own YAML files for the two reference mappings shipped.
+# ---------------------------------------------------------------------------
+_NAME_PARSERS = {
+    "first_last": config.parse_sleeper_name,
+    "last_first_comma": config.parse_nffc_name,
+}
+
+
+def load_adp_source_mapping(source_name: str) -> dict:
+    path = config.ADP_SOURCE_MAPPINGS_DIR / f"{source_name.lower()}.yml"
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def ingest_via_mapping(mapping: dict, path: Path, report: JoinReport) -> pd.DataFrame:
+    """Canonical fields: player, position, team, adp_value, adp_rank, adp_min, adp_max,
+    adp_n, as_of -- every ADP source, however it spells its own columns, produces a
+    frame with this same shape. Reproduces ingest_nffc_adp/ingest_sleeper_adp exactly
+    for the two mappings this repo ships; see those functions' own comments for the
+    per-quirk reasoning (NFFC's team-by-index selection, Sleeper's ADP Rank / Match Key
+    / staleness handling) this function's mapping-driven branches mirror.
+    """
+    source_name = mapping["source_name"]
+    source_key = source_name.lower()  # matches config.POSITION_MAP_EXCEPTIONS / TEAM_MAP_EXCEPTIONS keys
+    raw = pd.read_csv(path, sep=mapping["delimiter"])
+
+    if mapping.get("staleness_check"):
+        as_of_col = mapping["as_of"]["column"]
+        _assert_sleeper_freshness(raw.rename(columns={as_of_col: "Date Pulled"}), path, report)
+
+    cols = mapping["columns"]
+    numeric_cols = [cols[f] for f in ("adp_value", "adp_min", "adp_max", "adp_n") if cols.get(f)]
+    for c in numeric_cols:
+        raw[c] = pd.to_numeric(raw[c], errors="coerce")
+
+    if "team_by_index" in mapping:
+        team_col = list(raw.columns)[mapping["team_by_index"]]
+    else:
+        team_col = cols["team"]
+
+    parse_name = _NAME_PARSERS[mapping["name_format"]]
+    has_adp_rank_col = mapping["adp_rank"]["mode"] == "column_with_fallback" and mapping["adp_rank"]["column"] in raw.columns
+    match_key_col = mapping.get("match_key_column")
+    has_match_key = bool(match_key_col) and match_key_col in raw.columns
+    as_of_mode = mapping["as_of"]["mode"]
+
+    rows = []
+    for _, r in raw.iterrows():
+        pos = config.canonical_position(r[cols["position"]], mapping["position_source_code"])
+        if not _validate_position(pos, source_key, r[cols["position"]], r[cols["player"]], report):
+            continue
+        first, last, suffix = parse_name(str(r[cols["player"]]))
+        team = config.canonical_team(r[team_col], mapping["team_source_code"])
+        if team is None:
+            report.fail(f"{source_key}_adp: unmapped team '{r[team_col]}' for player '{r[cols['player']]}'")
+        raw_name_key = config.normalize_name(f"{first} {last}")
+        name_key = _apply_name_alias(raw_name_key, report, f"{source_key}_adp")
+
+        row = {
+            "player_display": r[cols["player"]],
+            "first": first,
+            "last": last,
+            "suffix": suffix,
+            "position": pos,
+            "nfl_team": team,
+            "name_key": name_key,
+            "source": source_name,
+            "adp_value": r[cols["adp_value"]],
+            "adp_min": r[cols["adp_min"]] if cols.get("adp_min") else np.nan,
+            "adp_max": r[cols["adp_max"]] if cols.get("adp_max") else np.nan,
+            "adp_n": r[cols["adp_n"]] if cols.get("adp_n") else np.nan,
+        }
+        if has_adp_rank_col:
+            row["adp_rank"] = r[mapping["adp_rank"]["column"]]
+        elif mapping["adp_rank"]["mode"] == "column_with_fallback":
+            row["adp_rank"] = row["adp_value"]
+        # "computed_rank_from_value" mode is filled in after the loop (needs the whole column).
+        row["as_of"] = r[mapping["as_of"]["column"]] if as_of_mode == "column" else date.today().isoformat()
+        if source_key == "sleeper":
+            row["sleeper_raw_name_key"] = raw_name_key
+            match_key_name = None
+            if has_match_key:
+                raw_match = r.get(match_key_col)
+                if pd.notna(raw_match) and "|" in str(raw_match):
+                    candidate = str(raw_match).rsplit("|", 1)[0].strip()
+                    match_key_name = candidate or None
+            row["sleeper_match_key_name"] = match_key_name
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    if mapping["adp_rank"]["mode"] == "computed_rank_from_value":
+        df["adp_rank"] = df["adp_value"].rank(method="min")
+
+    if mapping["usable_for_survival"] == "always_true":
+        df["adp_usable_for_survival"] = True
+    else:
+        df["adp_usable_for_survival"] = df["adp_n"].fillna(0) >= config.ADP_MIN_N
+        for _, row in df[~df["adp_usable_for_survival"]].iterrows():
+            report.note(
+                f"{source_key}_adp: '{row['player_display']}' has adp_n={row['adp_n']} "
+                f"(< {config.ADP_MIN_N}) -- shown but excluded from survival math"
+            )
+    return df
+
+
+def ingest_nffc_via_mapping(report: JoinReport, path: Path | None = None) -> pd.DataFrame:
+    path = path or config.NFFC_ADP_RAW_PATH
+    return ingest_via_mapping(load_adp_source_mapping("NFFC"), path, report)
+
+
+def ingest_sleeper_via_mapping(report: JoinReport, path: Path | None = None) -> pd.DataFrame:
+    path = path or config.latest_sleeper_adp_raw_path()
+    return ingest_via_mapping(load_adp_source_mapping("Sleeper"), path, report)
+
+
+# The live path (work order 2026-08-29 item 4): REFERENCE_ADP / COMPARISON_ADP select
+# by source name, same as before -- the two functions behind those names are now the
+# generic, mapping-driven ones, not one bespoke function per source.
+ADP_INGESTORS = {"NFFC": ingest_nffc_via_mapping, "Sleeper": ingest_sleeper_via_mapping}
 
 
 def ingest_reference_and_comparison_adp(report: JoinReport) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -788,6 +965,17 @@ def compute_sleeper_name_crosswalk(ref_df: pd.DataFrame, cmp_df: pd.DataFrame, m
     throwing it away once player_master.csv is written -- "the ADP file is already an
     authoritative Sleeper-to-master crosswalk," per the work order.
 
+    Resolution order per row (work order 2026-08-29b item 2 / 2026-08-29 item 0, R42):
+    Sleeper's own `sleeper_match_key_name` FIRST, our constructed+aliased `name_key`
+    as FALLBACK, keeping whichever one actually matches a real player_master row. Not
+    "Match Key always wins": measured against the 08-29 file, Match Key's own hyphen
+    handling ("jaxon smithnjigba", no space) disagrees with props' spelling ("jaxon
+    smith njigba") for every hyphenated name, so trying it unconditionally in
+    ingest_sleeper_adp's own join broke 3 real top-150 players. Validating each
+    candidate against master here (which ingest_sleeper_adp can't do -- player_master
+    doesn't exist yet at ingestion time) is what makes "first pass, with fallback"
+    actually safe.
+
     Only built when Sleeper is actually one of the two ingested sources: if the league
     ever runs with an all-NFFC configuration, live Sleeper polling is disabled anyway
     (main_cockpit.sync_from_sleeper's own is_sleeper gate), so there is nothing for a
@@ -804,16 +992,27 @@ def compute_sleeper_name_crosswalk(ref_df: pd.DataFrame, cmp_df: pd.DataFrame, m
         return pd.DataFrame(columns=cols)
 
     master_keys = set(zip(master["name_key"], master["position"]))
-    rows = [
-        {
+    rows = []
+    rescued_by_match_key = 0
+    for _, r in sleeper_df.iterrows():
+        position = r["position"]
+        constructed_ok = (r["name_key"], position) in master_keys
+        match_key_name = r.get("sleeper_match_key_name")
+        match_key_ok = pd.notna(match_key_name) and (match_key_name, position) in master_keys
+        if match_key_ok:
+            resolved = match_key_name
+            if not constructed_ok:
+                rescued_by_match_key += 1
+        elif constructed_ok:
+            resolved = r["name_key"]
+        else:
+            continue
+        rows.append({
             "sleeper_name_key": r["sleeper_raw_name_key"],
-            "master_name_key": r["name_key"],
+            "master_name_key": resolved,
             "player_display": r["player_display"],
-            "position": r["position"],
-        }
-        for _, r in sleeper_df.iterrows()
-        if (r["name_key"], r["position"]) in master_keys
-    ]
+            "position": position,
+        })
     out = pd.DataFrame(rows, columns=cols).drop_duplicates(subset=["sleeper_name_key"])
     config.DATA_DERIVED.mkdir(parents=True, exist_ok=True)
     out.to_csv(config.SLEEPER_NAME_CROSSWALK_PATH, index=False)
@@ -822,7 +1021,9 @@ def compute_sleeper_name_crosswalk(ref_df: pd.DataFrame, cmp_df: pd.DataFrame, m
         f"sleeper_name_crosswalk: {len(out)} Sleeper names mapped to a player_master row "
         f"({len(sleeper_df) - len(out)} Sleeper rows had no player_master match, e.g. players "
         f"outside config.POSITIONS coverage); {len(rewritten)} of the {len(out)} required a "
-        f"rewrite (normalization or alias difference) rather than an identity match"
+        f"rewrite (normalization or alias difference) rather than an identity match; "
+        f"{rescued_by_match_key} resolved via Match Key only, after our own construction "
+        f"failed to match player_master"
     )
     return out
 

@@ -1104,9 +1104,12 @@ def _w15(roster: RosterState) -> Warning_ | None:
     return None
 
 
-def _w16(roster: RosterState, laporta_taken_at_pick53: bool) -> Warning_ | None:
-    if not laporta_taken_at_pick53 and roster.current_round >= 8 and roster.count("TE") == 0:
-        return Warning_("W16", "LaPorta-miss branch, no TE1 entering Rd 8 -- Kincaid tier is the plan.", "Medium")
+def _w16(roster: RosterState, fork_miss_branch: bool) -> Warning_ | None:
+    """`fork_miss_branch`: the TE1 fork player (config.draft_setup.te1_fork_player, if
+    any) is gone and the owner still doesn't have a TE1 -- work order 2026-08-29 item 3
+    (R39): the wording must not assume a specific player."""
+    if fork_miss_branch and roster.current_round >= 8 and roster.count("TE") == 0:
+        return Warning_("W16", "TE1 fork player missed, no TE1 entering Rd 8 -- next tier is the plan.", "Medium")
     return None
 
 
@@ -1155,7 +1158,7 @@ LAYER_DEPENDENT_RULES = {
 
 def evaluate_guardrails(
     roster: RosterState,
-    laporta_taken_at_pick53: bool = False,
+    fork_miss_branch: bool = False,
     owner_drift: pd.DataFrame | None = None,
 ) -> list[Warning_]:
     warnings = []
@@ -1163,7 +1166,7 @@ def evaluate_guardrails(
         w = fn(roster)
         if w:
             warnings.append(w)
-    w16 = _w16(roster, laporta_taken_at_pick53)
+    w16 = _w16(roster, fork_miss_branch)
     if w16:
         warnings.append(w16)
     warnings.extend(_w17(roster, owner_drift))
@@ -1204,17 +1207,24 @@ def evaluate_w12(player_row: pd.Series, roster: RosterState) -> Warning_ | None:
 
 
 # ---------------------------------------------------------------------------
-# Recommender: pick-53 fork + Rd 7-11 congestion + top-N by need (spec Section 8)
+# Recommender: TE1 fork + Rd 7-11 congestion + top-N by need (spec Section 8)
 # ---------------------------------------------------------------------------
-def pick53_fork_state(roster: RosterState, laporta_available: bool) -> dict:
+def pick53_fork_state(roster: RosterState, fork_player_available: bool, fork_player_name: str = "") -> dict:
+    """Work order 2026-08-29 item 3 (R39): the fork is driven entirely by
+    `fork_player_name` (config.draft_setup.te1_fork_player's setup-screen field) --
+    no player name is hard-coded here. A blank name (the default for any league other
+    than the one this was built for) disables the fork cleanly: TE then falls through
+    to generic value logic, with no fork-specific note or branch."""
     has_te = roster.count("TE") > 0
     if has_te:
         return {"branch": "resolved", "note": "TE1 already rostered."}
-    if roster.current_overall_pick <= 53 and laporta_available:
-        return {"branch": "laporta_available", "note": "Take LaPorta at 53; TE2 follows in Rd 10-11."}
+    if not fork_player_name:
+        return {"branch": "no_fork_configured", "note": "No TE1 fork player configured -- TE follows generic value logic."}
+    if roster.current_overall_pick <= 53 and fork_player_available:
+        return {"branch": "fork_player_available", "note": f"Take {fork_player_name} at 53; TE2 follows in Rd 10-11."}
     return {
-        "branch": "laporta_gone",
-        "note": "No early TE -- double up Kincaid + Andrews tier in Rd 8-11. "
+        "branch": "fork_player_gone",
+        "note": f"No early TE -- {fork_player_name} is gone; double up the next TE1 tier in Rd 8-11. "
         "Congestion band moves up to Rd 7-11 on this branch (W18).",
     }
 
@@ -1313,18 +1323,27 @@ def top_recommendations(
 def evaluate_pick(
     board: pd.DataFrame,
     roster: RosterState,
-    laporta_available: bool,
+    fork_player_available: bool,
     owner_drift: pd.DataFrame | None,
     owner_rb_teams: set[str] | None = None,
     drafted_name_keys: set[str] | None = None,
+    fork_player_name: str = "",
 ) -> dict:
     """The one function app/main.py calls per pick to get everything the UI needs:
-    warnings, roster summary, the pick-53 fork, the Rd 7-11 band status, and a
+    warnings, roster summary, the TE1 fork, the Rd 7-11 band status, and a
     need-adjusted top-10. `board` must already have composite_score and
     survival_probability computed (compute_composite + compute_availability).
     `drafted_name_keys` only feeds the single kicker suggestion (work order 2026-08-24
-    item 7); every other rule already reads draft state off `roster` and `board`."""
-    warnings = evaluate_guardrails(roster, laporta_taken_at_pick53=not laporta_available and roster.count("TE") > 0, owner_drift=owner_drift)
+    item 7); every other rule already reads draft state off `roster` and `board`.
+
+    `fork_player_name` (work order 2026-08-29 item 3 / R39): the setup screen's
+    `te1_fork_player`, or "" to disable the fork entirely -- see
+    pick53_fork_state's own docstring. Callers that don't pass it (this function's
+    old callers) get the fork disabled, matching "off by default for any other
+    league."""
+    warnings = evaluate_guardrails(
+        roster, fork_miss_branch=not fork_player_available and roster.count("TE") > 0, owner_drift=owner_drift
+    )
     last_row = None
     if roster.picks:
         matches = board[board["player"] == roster.picks[-1]["player"]]
@@ -1341,7 +1360,7 @@ def evaluate_pick(
     return {
         "warnings": warnings,
         "roster_summary": roster_summary(roster),
-        "pick53_fork": pick53_fork_state(roster, laporta_available),
+        "pick53_fork": pick53_fork_state(roster, fork_player_available, fork_player_name),
         "band_7_11": band_7_11_status(roster),
         "top_recommendations": top_recommendations(board, roster, drafted_name_keys=drafted_name_keys),
     }

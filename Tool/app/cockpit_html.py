@@ -42,12 +42,27 @@ THEME_LIGHT = {
 COCKPIT_COLUMNS = [
     ("sleeper", "Sleeper", "right", 52),
     ("player", "Player", "left", None),
-    ("sharp", "Sharp", "right", 60),
+    # Work order 2026-08-29 item 1 (R37): renamed from "Sharp" -- the old column was a
+    # raw, un-adjusted comparison-vs-reference RANK divergence; this one is
+    # `market_reach_gap`, a position-adjusted VALUE-vs-rank comparison with the
+    # opposite sign convention (positive now means a BIGGER reach, not a better one).
+    # Leaving the old label would make the two numbers indistinguishable in a
+    # screenshot despite meaning something different.
+    ("reach", "Reach", "right", 60),
     ("value", "Value", "right", 66),
     # Work order 2026-08-24b item 5 (R39): merged with the old separate "Timing"
     # column. The chip is now the primary reading and the percentage a small
     # secondary annotation -- see the cell-building code below for why.
     ("avail", "At {target}", "right", 96),
+    # Work order 2026-08-29b item 3 (R43): `edge` (24b items 2+4's drop-off-adjusted
+    # vorp -- what candidates_for_pick and every route actually sort on) had no
+    # on-screen home at all before this; `vorp` was already a first-class column here,
+    # so the fix is adding edge NEXT TO it, not promoting edge at vorp's expense.
+    # "edge is a two-pick optimizer" (item 3's own framing): a 31-vorp TE at +14.7 edge
+    # is ranked above a 50-vorp WR at -6.6 because the TE probably won't survive and
+    # the WR probably will -- locally correct, and only legible with both numbers
+    # showing. Display only: no change to the edge formula, the fallback, or n_sims.
+    ("edge", "Edge", "right", 64),
     ("vorp", "Over repl", "right", 68),
     ("factors", "Factors", "right", 62),
     ("note", "Your note", "left", None),
@@ -56,8 +71,13 @@ COCKPIT_COLUMNS = [
 SORT_OPTIONS = {
     "Sleeper order": ("reference_adp_rank", True),
     "Board value": ("composite_score", False),
-    "Sharp edge": ("_sharp", False),
+    # Ascending, not descending like the rest: positive market_reach_gap means a
+    # BIGGER reach (worse), so the best values sort first at the smallest (most
+    # negative) number -- the opposite convention from the old "Sharp edge" sort,
+    # which is exactly why the label changed too.
+    "Market reach": ("_reach_gap", True),
     "Odds at my pick": ("survival_probability", False),
+    "Edge": ("edge", False),
     "Over replacement": ("vorp", False),
     "Factor score": ("factor_score_recomputed", False),
 }
@@ -178,7 +198,15 @@ def render_board(
         tm = bm.timing(wait, wait_reference, 1.0 if on_clock else avail)
         gone = (not on_clock) and avail < bm.GONE_THRESHOLD
         name_color = t["faint"] if gone else t["text"]
-        edge = bm.sharp_edge(r)
+        # Work order 2026-08-29 item 1 (R37): position-adjusted, opposite sign
+        # convention from the old sharp_edge -- positive now means a BIGGER reach
+        # (worse), so the heat map below is flipped (negated) relative to the old cell.
+        reach_gap = bm.market_reach_gap(r)
+        # 24b items 2+4's drop-off-adjusted vorp (candidates_for_pick's actual sort
+        # key) -- NOT the same number as `reach_gap` above. Falls back to raw vorp if
+        # the caller's board never asked compute_availability for want_edge=True
+        # (matches draft_engine's own fallback).
+        player_edge = float(r["edge"]) if "edge" in r.index and pd.notna(r.get("edge")) else float(r.get("vorp") or 0.0)
         note = plain(r.get("intel_note")) or (
             f"Your list, pick {r.get('intel_windows')}" if r.get("intel_tag") == "target"
             else ("You faded him" if r.get("intel_tag") == "fade" else "")
@@ -192,8 +220,11 @@ def render_board(
             f'&nbsp;<span style="font-weight:500;color:{name_color}">{html.escape(str(r["player"]))}</span>'
             f' <span style="font-size:11px;font-weight:600;color:{pos_color}">{pos}</span>'
             f' <span style="font-size:11px;color:{t["faint"]}">{html.escape(str(r["nfl_team"]))}</span></td>',
-            f'<td style="text-align:right;color:{_heat(edge, -8, 8, t)}" class="nk-num">'
-            f'{"" if edge is None else ("+" if edge > 0 else "") + str(int(edge))}</td>',
+            # Negated in the _heat call: positive market_reach_gap is a BIGGER reach
+            # (worse), so it must map to the "bad" color, opposite of the old
+            # sharp_edge cell's polarity.
+            f'<td style="text-align:right;color:{_heat(-reach_gap if reach_gap is not None else None, -8, 8, t)}" class="nk-num">'
+            f'{"" if reach_gap is None else ("+" if reach_gap > 0 else "") + str(int(reach_gap))}</td>',
             f'<td style="text-align:right;font-weight:600;color:{_heat(r["composite_score"], 15, 45, t)}" '
             f'class="nk-num">{r["composite_score"]:.1f}</td>',
             # Work order 2026-08-24b item 5 (R39): the chip is the primary reading here,
@@ -207,6 +238,12 @@ def render_board(
             # does not exist.
             f'<td style="text-align:right" class="nk-num">{_timing_chip(tm, t)}'
             f'<span style="color:{t["faint"]};font-size:10px;margin-left:5px">{avail*100:.0f}%</span></td>',
+            # Work order 2026-08-29b item 3 (R43): edge beside vorp, both first-class --
+            # "+14.7" alone reads as a ranking; "+14.7" next to "31.4" reads as the
+            # tradeoff it actually is (a 31-vorp player edge-ranked above a 50-vorp one
+            # because the bigger player probably survives to the next turn anyway).
+            f'<td style="text-align:right;color:{_heat(player_edge, -10, 10, t)};font-weight:600" class="nk-num">'
+            f'{("+" if player_edge >= 0 else "") + f"{player_edge:.1f}"}</td>',
             f'<td style="text-align:right;color:{_heat(r.get("vorp"), 0, 30, t)}" class="nk-num">'
             f'{"" if pd.isna(r.get("vorp")) else ("+" if r["vorp"] >= 0 else "") + f"{r['vorp']:.0f}"}</td>',
             f'<td style="text-align:right;color:{_heat(r.get("factor_score_recomputed"), 0, 20, t)}" '
@@ -224,13 +261,29 @@ def render_context_strip(
     clock_label: str, on_clock_pick: int, clock_sub: str,
     next_label: str, next_pick: int, next_sub: str,
     intervening: list[dict], warn_chips: list[dict], theme: dict,
+    coverage: float | None = None,
 ) -> str:
     """Handoff Section 3.2 band 1 -- four hairline-divided cells: on the clock, the
     owner's next turn, the intervening managers' tells, and what's firing/arming.
     Replaces the ad hoc pair of markdown blocks the first cut used for cells 1-2 only;
     cells 3-4 (manager tells, warning chips) didn't exist before work order 2026-08-24
-    item 6 / R34."""
+    item 6 / R34.
+
+    `coverage` (work order 2026-08-29 item 2 / R38): P(at least one shortlist name for
+    this window survives to `next_pick`) -- board_model.shortlist_coverage's own
+    return value, rendered here PURELY as a display annotation on the "next pick" cell.
+    Deliberately not styled as a decision signal (no chip, no color-coding by
+    threshold): coverage answers "how urgent is this position," never "who should I
+    take" -- it must never look like something to sort or filter on. `None` (no
+    shortlist tagged for this window at all) renders nothing, not a "0%" that would
+    misread as "definitely gone."
+    """
     t = theme
+    coverage_line = (
+        f'<div style="font-size:11px;color:{t["faint"]};margin-top:2px">'
+        f'Shortlist coverage {coverage * 100:.0f}%</div>'
+        if coverage is not None else ""
+    )
     chip_colors = {"bad": (t["bad"], "rgba(226,96,79,.16)"), "warn": (t["warn"], "rgba(217,164,69,.16)"),
                    "good": (t["good"], "rgba(79,191,139,.16)")}
     tell_chips = "".join(
@@ -260,6 +313,7 @@ def render_context_strip(
       <span style="font-size:22px;font-weight:500;color:{t['accent']}" class="nk-num">{next_pick}</span>
       <span style="font-size:13px;color:{t['muted']}">{html.escape(next_sub)}</span>
     </div>
+    {coverage_line}
   </div>
   <div class="nk-strip-cell" style="flex:1;min-width:0">
     <div class="nk-kicker">Who's in between</div>
@@ -321,8 +375,9 @@ def render_route_card(route: dict, index: int, this_pick: int, wait_reference: i
       <div style="font-size:17px;font-weight:500;color:{color}" class="nk-num">{route['vorp_sum']:+.0f}</div></div>
     <div><div class="nk-kicker">Board value</div>
       <div style="font-size:17px;font-weight:500" class="nk-num">{route['composite_sum']:.0f}</div></div>
-    <div><div class="nk-kicker">Sharp edge</div>
-      <div style="font-size:17px;font-weight:500" class="nk-num">+{route['sharp_sum']:.0f}</div></div>
+    <div><div class="nk-kicker">Reach cost</div>
+      <div style="font-size:17px;font-weight:500;color:{t['bad'] if route['reach_penalty_sum'] > 0 else t['muted']}" class="nk-num">
+      -{route['reach_penalty_sum']:.0f}</div></div>
   </div>
   <div style="font-size:11px;color:{t['muted']};margin-top:8px;border-left:2px solid {color};
        padding-left:8px">{html.escape(cost)}</div>

@@ -20,7 +20,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # noqa: E402
 
 SETUP_PATH_NAME = "draft_setup.json"
-DEFAULT_TE1_FORK_PLAYER = "Sam LaPorta"
+# Work order 2026-08-29 item 3 (R39): blank, not a hard-coded player -- "that is the
+# default for any OTHER league" (the owner's own words). This league's own choice
+# lives in the persisted state/draft_setup.json (written once via the setup screen),
+# never in this constant; a blank fork disables itself cleanly (draft_engine's
+# pick53_fork_state / _w16 both check for an empty fork_player_name).
+DEFAULT_TE1_FORK_PLAYER = ""
 
 
 def setup_path() -> Path:

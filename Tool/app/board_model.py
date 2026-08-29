@@ -191,16 +191,88 @@ def timing(wait_odds: float, reference_pick: int, availability: float = 1.0) -> 
     return Timing("NOW", f"Gone before {reference_pick}", True)
 
 
-def sharp_edge(row: pd.Series) -> float | None:
-    """How many picks EARLIER the high stakes market takes him than Sleeper does.
+_position_offsets_cache: dict[str, float] | None = None
 
-    `adp_rank_divergence` is comparison minus reference, so a bigger number means the
-    sharps take him LATER. Negate it, so positive means the sharps are higher on him,
-    which is the side value lives on. Cross-check from the owner's own intel file:
-    Jonathon Brooks, Sleeper 128 against NFFC 66, reads +62.
+
+def _position_offsets() -> dict[str, float]:
+    """position -> mean(comparison_adp_value - reference_adp_rank) for that position,
+    i.e. the position's OWN average "how far ahead of NFFC ADP" gap -- the number
+    `market_reach_gap` below subtracts out. Read fresh from
+    data/derived/adp_source_offsets.csv (R27, recomputed every build by
+    build/pipeline.py's compute_adp_source_offsets) rather than hard-coded, per work
+    order 2026-08-29 item 1's explicit instruction. That file stores the OTHER
+    orientation (`mean_offset_reference_minus_comparison`, i.e. sleeper_rank minus
+    nffc_adp -- the quantity the 2026-08-16 offset work already needed); negated here
+    because market_reach_gap is defined as nffc_adp minus sleeper_rank, the orientation
+    the owner's ruling specified ("how far ahead of NFFC ADP a pick is").
+
+    Cached at module level: this file only changes on a full pipeline rebuild, which
+    always restarts the app process anyway (same reasoning as
+    draft_state._sleeper_crosswalk's cache)."""
+    global _position_offsets_cache
+    if _position_offsets_cache is None:
+        path = config.ADP_SOURCE_OFFSETS_PATH
+        if path.exists():
+            df = pd.read_csv(path)
+            _position_offsets_cache = {
+                row["position"]: -float(row["mean_offset_reference_minus_comparison"])
+                for _, row in df.iterrows()
+            }
+        else:
+            _position_offsets_cache = {}
+    return _position_offsets_cache
+
+
+def market_reach_gap(row: pd.Series) -> float | None:
+    """Work order 2026-08-29 item 1 (R37): position-adjusted replacement for the old
+    `sharp_edge`. Positive means THIS player is being drafted further ahead of his own
+    NFFC ADP than is typical for his position -- a bigger-than-normal reach; negative
+    means better value than his position's own norm.
+
+    Why position-adjusted: measured position offsets (data/derived/adp_source_offsets.csv)
+    show QB and TE both run structurally positive under the raw gap (Sleeper leagues
+    draft the position everyone needs one of earlier than a high-stakes market that can
+    punt on a weak QB2), and WR runs structurally negative -- not because any individual
+    QB or TE is overpriced, but because the position itself is a market-wide onesie
+    premium. Subtracting the position's own average gap is what turns "every QB and TE
+    reads as a reach" into "THIS QB is more or less of a reach than a typical QB,"
+    which is the quantity actually worth penalizing.
+
+    Returns None (not 0.0) when NFFC has no coverage for this player at all -- callers
+    must treat that as unknown, not neutral (work order's explicit instruction);
+    `reach_penalty` below returns a zero penalty in that case, but the None is what
+    lets a caller flag the row instead of silently assuming average.
     """
-    d = row.get("adp_rank_divergence")
-    return None if pd.isna(d) else -float(d)
+    nffc = row.get("comparison_adp_value")
+    sleeper = row.get("reference_adp_rank")
+    if pd.isna(nffc) or pd.isna(sleeper):
+        return None
+    raw_gap = float(nffc) - float(sleeper)
+    offset = _position_offsets().get(row.get("position"), 0.0)
+    return raw_gap - offset
+
+
+# Modeling choices, not owner-specified and not fit to the backtest (work order's own
+# "do not tune to the backtest") -- bounded and soft, matching the owner's own framing
+# ("a SOFT penalty") and the existing INTEL_NUDGE_CAP's precedent for a bounded nudge
+# rather than an unbounded one. REACH_PENALTY_WEIGHT: an 8-pick bigger-than-typical
+# reach costs 8 * 0.15 = 1.2 edge points -- roughly EDGE_TIE_BAND_POINTS's own scale,
+# enough to matter among near-equal candidates without being able to flip a real
+# multi-tier edge gap on its own (REACH_PENALTY_CAP bounds that further).
+REACH_PENALTY_WEIGHT = 0.15
+REACH_PENALTY_CAP = 15.0
+
+
+def reach_penalty(row: pd.Series) -> float:
+    """Soft, ONE-DIRECTIONAL points penalty (work order 2026-08-29 item 1): only a
+    bigger-than-typical-for-position reach (positive market_reach_gap) costs anything;
+    being under the position's own norm costs nothing (the owner asked for a penalty,
+    not a symmetric bonus). Zero when NFFC has no coverage -- see
+    market_reach_gap's own docstring for why that must not be read as "neutral"."""
+    gap = market_reach_gap(row)
+    if gap is None or gap <= 0:
+        return 0.0
+    return float(min(gap * REACH_PENALTY_WEIGHT, REACH_PENALTY_CAP))
 
 
 # ===========================================================================
@@ -345,8 +417,21 @@ def candidates_for_pick(
     vorp = sub.get("vorp", pd.Series(0.0, index=sub.index)).fillna(0.0)
     edge_col = sub["edge"] if "edge" in sub.columns else pd.Series(np.nan, index=sub.index)
     edge = edge_col.where(edge_col.notna(), vorp).to_numpy()
-    divergence = sub.get("adp_rank_divergence", pd.Series(np.nan, index=sub.index))
-    sharp = np.where(divergence.notna(), -divergence.astype(float), 0.0)
+
+    # Work order 2026-08-29 item 1 (R37): position-adjusted reach penalty, vectorized
+    # (no scipy, just a per-position dict lookup + arithmetic -- cheap enough to keep
+    # candidates_for_pick's item-3 performance work intact). Folded straight into the
+    # tier used for the primary sort, not kept as a separate tiebreak field the way the
+    # old `sharp_edge` was -- this is what makes it "change recommendations" rather
+    # than just annotate them.
+    sub_positions = sub["position"].to_numpy()
+    nffc = sub.get("comparison_adp_value", pd.Series(np.nan, index=sub.index)).to_numpy(dtype=float)
+    sleeper_rank = sub.get("reference_adp_rank", pd.Series(np.nan, index=sub.index)).to_numpy(dtype=float)
+    offsets_map = _position_offsets()
+    offset_arr = np.array([offsets_map.get(p, 0.0) for p in sub_positions])
+    has_nffc = ~np.isnan(nffc) & ~np.isnan(sleeper_rank)
+    reach_gap = np.where(has_nffc, nffc - sleeper_rank - offset_arr, np.nan)
+    penalty = np.where(has_nffc & (reach_gap > 0), np.minimum(reach_gap * REACH_PENALTY_WEIGHT, REACH_PENALTY_CAP), 0.0)
 
     out = pd.DataFrame({
         "player": sub["player"].to_numpy(),
@@ -356,17 +441,19 @@ def candidates_for_pick(
         "composite_score": sub["composite_score"].astype(float).to_numpy(),
         "edge": edge,
         "vorp": vorp.to_numpy(),
-        "sharp_edge": sharp,
+        "market_reach_gap": reach_gap,
+        "reach_penalty": penalty,
         "availability": avail_arr[mask],
         "wait": wait_arr[mask],
         "row": [sub.iloc[i] for i in range(len(sub))],
     })
-    # Coarser than `edge` itself: two candidates within one band are "near-equal" on
-    # value, so intel/sharp-market breaks the tie; a wider gap is decided on edge alone.
-    out["_edge_tier"] = np.floor(out["edge"] / EDGE_TIE_BAND_POINTS)
+    # Coarser than `edge - reach_penalty` itself: two candidates within one band are
+    # "near-equal" on value, so intel breaks the tie; a wider gap is decided on
+    # (penalized) edge alone.
+    out["_edge_tier"] = np.floor((out["edge"] - out["reach_penalty"]) / EDGE_TIE_BAND_POINTS)
     return out.sort_values(
-        by=["_edge_tier", "on_list", "priority", "sharp_edge", "composite_score"],
-        ascending=[False, False, True, False, False],
+        by=["_edge_tier", "on_list", "priority", "composite_score"],
+        ascending=[False, False, True, False],
     ).drop(columns=["_edge_tier"]).reset_index(drop=True)
 
 
@@ -407,7 +494,10 @@ def build_route(anchor: pd.Series, remaining: dict, pool: pd.DataFrame, schedule
         "shape_left": shape,
         "vorp_sum": float(sum(float(m.get("vorp") or 0.0) for m in members)),
         "composite_sum": float(sum(float(m["composite_score"]) for m in members)),
-        "sharp_sum": float(sum(max(sharp_edge(m) or 0.0, 0.0) for m in members)),
+        # Work order 2026-08-29 item 1 (R37): a COST, not a bonus -- replaces the old
+        # sharp_sum (which rewarded a positive un-adjusted rank divergence). Summed
+        # penalty across the whole route's members; build_routes subtracts it below.
+        "reach_penalty_sum": float(sum(reach_penalty(m) for m in members)),
     }
 
 
@@ -420,7 +510,7 @@ def build_routes(board: pd.DataFrame, roster_counts: dict, this_pick: int, on_cl
     schedule = [p for p in picks if p > this_pick][:ROUTE_LEGS]
     anchors = candidates_for_pick(board, this_pick, this_pick, next_after, remaining, set(), min_availability=0.0)
     routes = [build_route(a["row"], remaining, board, schedule, this_pick) for _, a in anchors.head(n_routes).iterrows()]
-    routes.sort(key=lambda r: r["vorp_sum"] + r["composite_sum"] + 2 * r["sharp_sum"], reverse=True)
+    routes.sort(key=lambda r: r["vorp_sum"] + r["composite_sum"] - 2 * r["reach_penalty_sum"], reverse=True)
     return routes
 
 
@@ -521,6 +611,40 @@ def warn_chips(warnings: list, current_round: int, rule_schedule: list[tuple] = 
     if not chips:
         chips.append({"label": "nothing firing", "kind": "good"})
     return chips
+
+
+def shortlist_coverage(board: pd.DataFrame, target_pick: int) -> float | None:
+    """Work order 2026-08-29 item 2 (R38): P(at least one shortlist name for
+    `target_pick`'s window survives to it) -- the owner's second, SEPARATE objective
+    ("maximize total VORP AND maximize the probability of landing at least one name
+    from each pick window's shortlist"). Shortlist = intel_tag=="target" rows whose
+    intel_windows includes target_pick.
+
+    Combines each shortlisted player's own `survival_probability` (already the
+    chosen availability method's output, R36 -- montecarlo by default) under an
+    independence approximation: P(>=1 survives) = 1 - prod(1 - p_i). A simplification,
+    not the full joint capacity-aware treatment `edge` gets -- deliberately: this
+    number is INFORMATIONAL ONLY (task's own instruction; see the "do not" list), so it
+    does not carry the same bar as a ranking input. If a future need promotes it to a
+    real decision input, it should get the same per-simulation joint treatment `edge`
+    already has (draft_engine.compute_availability's `want_edge` mechanism), not this
+    approximation.
+
+    Returns None, not 0.0, when no shortlist exists for this window at all -- there is
+    nothing to have a coverage OPINION about, which reads differently than "certain to
+    miss."
+    """
+    if "intel_tag" not in board.columns or "intel_windows" not in board.columns:
+        return None
+    is_target = board["intel_tag"] == "target"
+    if not is_target.any():
+        return None
+    in_window = board[is_target].apply(lambda r: target_pick in _intel_windows(r), axis=1)
+    shortlist = board[is_target][in_window]
+    if shortlist.empty:
+        return None
+    survival = shortlist["survival_probability"].clip(0, 1).fillna(0.0)
+    return float(1.0 - (1.0 - survival).prod())
 
 
 def pick_line_offsets(on_clock_pick: int, owner_next: int, rows: int = BOARD_ROWS) -> dict[int, str]:

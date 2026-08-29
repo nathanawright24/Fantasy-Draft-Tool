@@ -1,0 +1,54 @@
+# Sleeper ADP export mapping (work order 2026-08-29 item 4 / R40).
+# Canonical fields: player, position, team, adp_value, adp_rank, adp_min, adp_max,
+# adp_n, as_of. A new site with this same shape (comma-delimited, "First Last Suffix"
+# names, one row per player) needs ONLY a file like this one -- no code.
+source_name: Sleeper
+delimiter: ","
+# Which of the two built-in name parsers this file's Player column uses.
+# config.parse_sleeper_name ("First Last Suffix") or config.parse_nffc_name
+# ("Last, First" with the suffix on the surname half) are the only two available --
+# a source using some THIRD convention still needs a new parser function, not just a
+# new mapping file. Documented limitation, not hidden.
+name_format: first_last
+
+# config.canonical_position(raw, position_source_code) / config.canonical_team(raw,
+# team_source_code) -- which source key those two functions key their exception
+# tables on (config.POSITION_MAP_EXCEPTIONS / config.TEAM_MAP_EXCEPTIONS /
+# config.DROP_POSITIONS).
+position_source_code: sleeper
+team_source_code: sleeper
+
+columns:
+  player: Player
+  position: Pos
+  team: Team
+  adp_value: ADP
+
+# adp_rank: prefer the dedicated "ADP Rank" column (added when Sleeper's export grew
+# from 8 to 10 columns, work order 2026-08-29b item 2); fall back to adp_value's own
+# column for the pre-split 8-column shape.
+adp_rank:
+  mode: column_with_fallback
+  column: ADP Rank
+  fallback_field: adp_value
+
+# Sleeper's ADP is a bare sequential rank, not an observed-range export -- no
+# min/max/n exist. Missing optional fields degrade gracefully (item 4's own
+# requirement): the survival fit's small-sample path (config.GENERIC_LOGNORMAL_SIGMA)
+# takes over automatically when these are null, rather than crashing.
+adp_min: null
+adp_max: null
+adp_n: null
+
+as_of:
+  mode: column
+  column: Date Pulled
+
+# Sleeper-specific extras (work order 2026-08-24b item 1 / 2026-08-29b item 2) --
+# absent from a generic mapping's REQUIRED shape; only used when present.
+match_key_column: Match Key
+staleness_check: true
+
+# Every row is treated as usable for the survival model regardless of sample size
+# (there is no sample-size column to threshold on).
+usable_for_survival: always_true

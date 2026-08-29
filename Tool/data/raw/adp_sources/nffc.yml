@@ -1,0 +1,40 @@
+# NFFC ADP export mapping (work order 2026-08-29 item 4 / R40).
+# Canonical fields: player, position, team, adp_value, adp_rank, adp_min, adp_max,
+# adp_n, as_of.
+source_name: NFFC
+delimiter: "\t"
+# "Last, First" with the suffix attached to the surname half (config.parse_nffc_name).
+name_format: last_first_comma
+
+position_source_code: nffc
+team_source_code: nffc
+
+columns:
+  player: Player
+  position: "Position(s)"
+  adp_value: ADP
+  adp_min: "Min Pick"
+  adp_max: "Max Pick"
+  adp_n: "# Picks"
+
+# NFFC's export has TWO columns literally named "Team" -- the NFL team and the
+# drafting fantasy team -- so pandas silently renames the second to "Team.1" on load.
+# Selecting by column INDEX (0-based) is the only reliable way to get the NFL team
+# one; selecting by name would silently grab whichever "Team" pandas kept unrenamed.
+team_by_index: 3
+
+# NFFC carries no per-row rank column; it is the pool-wide rank of adp_value itself.
+adp_rank:
+  mode: computed_rank_from_value
+
+# NFFC carries no pull-date column at all -- captured at ingestion time instead.
+as_of:
+  mode: today
+
+match_key_column: null
+staleness_check: false
+
+# Rows with too few observed picks (< config.ADP_MIN_N) are shown but flagged as not
+# usable for the survival model's dispersion fit -- unlike Sleeper, NFFC's adp_n is a
+# real observed sample size worth thresholding on.
+usable_for_survival: adp_n_threshold

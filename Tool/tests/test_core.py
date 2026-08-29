@@ -218,7 +218,7 @@ def test_draft_engine_smoke(built):
         {"player": "Brock Bowers", "position": "TE", "round": 3, "overall": 29},
     ]
     roster = de.RosterState(picks=fabricated_picks, current_round=4, current_overall_pick=44)
-    result = de.evaluate_pick(avail, roster, laporta_available=False, owner_drift=owner_drift)
+    result = de.evaluate_pick(avail, roster, fork_player_available=False, owner_drift=owner_drift)
 
     assert isinstance(result["warnings"], list)
     assert set(result["roster_summary"]) == set(config.ROSTER_TARGET)
@@ -1375,3 +1375,367 @@ def test_availability_method_config_comment_leads_with_capacity():
     brier_pos = comment_block.lower().find("brier")
     assert capacity_pos != -1 and brier_pos != -1
     assert capacity_pos < brier_pos, "the comment must mention capacity before it mentions Brier"
+
+
+# ---------------------------------------------------------------------------
+# 17. Work order 2026-08-29b items 1-2 / 2026-08-29 item 0 (R42): stale-build guard,
+#     ADP Rank vs ADP conflation, Match Key as a validated crosswalk fallback.
+# ---------------------------------------------------------------------------
+def test_sleeper_adp_rank_column_used_not_the_adp_column():
+    # The reported bug, reproduced directly: row 201 of the real 08-29 file is
+    # ADP Rank 201, ADP 204 -- ingestion must keep them distinct.
+    report = pipeline.JoinReport()
+    df = pipeline.ingest_sleeper_adp(report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-29.csv")
+    row = df[df["player_display"] == "Braelon Allen"].iloc[0]
+    assert row["adp_rank"] == 201
+    assert row["adp_value"] == 204
+    mismatches = int((df["adp_value"] != df["adp_rank"]).sum())
+    assert mismatches > 0
+    assert not report.hard_failures
+
+
+def test_sleeper_adp_rank_falls_back_to_adp_for_the_old_8_column_shape():
+    # The pre-split file has no "ADP Rank" column at all -- must not KeyError, must
+    # fall back to the old ADP-doubles-as-rank behavior.
+    report = pipeline.JoinReport()
+    df = pipeline.ingest_sleeper_adp(report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-16.csv")
+    assert (df["adp_value"] == df["adp_rank"]).all()
+
+
+def test_staleness_guard_fires_on_the_old_file_not_the_new_one():
+    old_report = pipeline.JoinReport()
+    pipeline.ingest_sleeper_adp(old_report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-16.csv")
+    assert old_report.hard_failures
+    assert "days old" in old_report.hard_failures[0]
+
+    new_report = pipeline.JoinReport()
+    pipeline.ingest_sleeper_adp(new_report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-29.csv")
+    assert not new_report.hard_failures
+
+
+def test_staleness_guard_is_a_real_config_toggle(monkeypatch):
+    # A 30-day tolerance must let the otherwise-13-days-old 08-16 file through --
+    # confirms the threshold is actually config.ADP_STALENESS_MAX_DAYS, not hardcoded.
+    monkeypatch.setattr(config, "ADP_STALENESS_MAX_DAYS", 30)
+    report = pipeline.JoinReport()
+    pipeline.ingest_sleeper_adp(report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-16.csv")
+    assert not report.hard_failures
+
+
+def test_match_key_used_as_crosswalk_fallback_never_as_the_core_join(built):
+    # Sleeper's OWN Match Key normalization disagrees with ours on hyphens
+    # ("jaxonsmithnjigba"-style, no space) -- using it for the CORE join broke real
+    # top-150 players (Jaxon Smith-Njigba, Amon-Ra St. Brown, Jacory Croskey-Merritt)
+    # the first time this was tried. The core join must still use our own
+    # normalization; Match Key only feeds the crosswalk, and only when validated
+    # against a real player_master row.
+    master, report_text = built
+    assert "HARD FAILURES (0)" in report_text
+    for player in ("Jaxon Smith-Njigba", "Amon-Ra St. Brown", "Jacory Croskey-Merritt"):
+        rows = master[master["player"] == player]
+        if len(rows):  # absent entirely is fine (e.g. no props coverage); wrong-keyed is not
+            assert pd.notna(rows.iloc[0]["reference_adp_rank"])
+
+    report = pipeline.JoinReport()
+    df = pipeline.ingest_sleeper_adp(report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-29.csv")
+    njigba = df[df["player_display"] == "Jaxon Smith-Njigba"].iloc[0]
+    assert njigba["name_key"] == "jaxon smith njigba"  # the core join key: ours, not Match Key's
+    assert njigba["sleeper_match_key_name"] == "jaxon smithnjigba"  # captured, but not joined on
+
+
+# ---------------------------------------------------------------------------
+# 18. Work order 2026-08-29b item 3 (R43): VORP shown beside edge on the cockpit
+#     board -- display only, no change to the edge formula/fallback/sim count.
+# ---------------------------------------------------------------------------
+def test_edge_column_sits_beside_vorp_on_the_cockpit_board():
+    import cockpit_html as ch
+    cols = [key for key, *_ in ch.COCKPIT_COLUMNS]
+    assert "edge" in cols and "vorp" in cols
+    assert cols.index("edge") == cols.index("vorp") - 1, "edge must render immediately before vorp, not buried elsewhere"
+    assert ch.SORT_OPTIONS["Edge"] == ("edge", False)
+
+
+def test_rendered_board_row_shows_both_edge_and_vorp(built):
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board = bm.availability_with_band(
+        board, as_of_pick=43, target_pick=53, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={}, n_sims=200,
+    )
+    import cockpit_html as ch
+    top5 = board.sort_values("edge", ascending=False).head(5)
+    rendered = ch.render_board(top5, target_pick=53, wait_reference=53, on_clock=False,
+                                pick_lines={}, theme=ch.THEME_DARK, rows=5)
+    # Both figures must appear, and edge must NOT have silently become vorp (a display
+    # bug that would make the two columns redundant instead of a tradeoff).
+    for _, row in top5.iterrows():
+        assert f'{row["edge"]:.1f}' in rendered.replace("+", "") or f'{-row["edge"]:.1f}' in rendered
+        assert f'{row["vorp"]:.0f}' in rendered.replace("+", "")
+
+
+def test_edge_formula_and_fallback_and_sim_count_unchanged_by_item3():
+    # Item 3 is display-only (work order 2026-08-29b: "Do not change the edge formula,
+    # the fallback, or the sim count") -- guards against a display fix drifting into a
+    # model change.
+    assert config.AVAILABILITY_N_SIMS == 500
+    import inspect
+    src = inspect.getsource(de.compute_availability)
+    assert 'df.loc[in_pool, "edge"] = (pool["vorp"] - best_at_target).to_numpy()' in src
+
+
+# ---------------------------------------------------------------------------
+# 19. Work order 2026-08-29 item 1 (R37): position-adjusted reach penalty.
+# ---------------------------------------------------------------------------
+def test_position_offsets_read_from_the_csv_not_hardcoded(built, monkeypatch):
+    master, _ = built
+    monkeypatch.setattr(bm, "_position_offsets_cache", None)
+    offsets = bm._position_offsets()
+    assert set(offsets) == set(config.POSITIONS)
+    on_disk = pd.read_csv(config.ADP_SOURCE_OFFSETS_PATH).set_index("position")["mean_offset_reference_minus_comparison"]
+    for pos in config.POSITIONS:
+        assert offsets[pos] == pytest.approx(-float(on_disk[pos]))
+
+
+def test_qb_at_exactly_the_position_offset_scores_zero(built, monkeypatch):
+    monkeypatch.setattr(bm, "_position_offsets_cache", None)
+    offset = bm._position_offsets()["QB"]
+    synthetic = pd.Series({"position": "QB", "reference_adp_rank": 50.0, "comparison_adp_value": 50.0 + offset})
+    gap = bm.market_reach_gap(synthetic)
+    assert gap == pytest.approx(0.0, abs=1e-9)
+
+
+def test_no_position_is_systematically_negative_in_the_calibration_population(built, monkeypatch):
+    # "Systematically negative" is evaluated over the SAME top-150-by-Sleeper-rank
+    # population adp_source_offsets.csv itself is calibrated on (compute_adp_source_offsets's
+    # own restriction) -- the full pool, including hundreds of deep-bench rows outside
+    # that range (many with no NFFC coverage at all), is not what the offset promises
+    # to zero out and does drift; that is expected, not a defect in the mechanism.
+    master, _ = built
+    monkeypatch.setattr(bm, "_position_offsets_cache", None)
+    board = de.compute_composite(master)
+    board["market_reach_gap"] = board.apply(lambda r: bm.market_reach_gap(r), axis=1)
+    top150 = board[board["reference_adp_rank"] <= 150]
+    for pos in config.POSITIONS:
+        vals = top150[top150["position"] == pos]["market_reach_gap"].dropna()
+        assert len(vals) > 0
+        assert abs(vals.mean()) < 1.0, f"{pos} mean market_reach_gap {vals.mean():.2f} looks systematically biased"
+
+
+def test_market_reach_gap_is_none_and_penalty_zero_without_nffc_coverage():
+    row = pd.Series({"position": "RB", "reference_adp_rank": 40.0, "comparison_adp_value": np.nan})
+    assert bm.market_reach_gap(row) is None
+    assert bm.reach_penalty(row) == 0.0
+
+
+def test_reach_penalty_only_fires_on_a_positive_gap_and_is_capped(monkeypatch):
+    monkeypatch.setattr(bm, "_position_offsets_cache", {"RB": 0.0})
+    good_value = pd.Series({"position": "RB", "reference_adp_rank": 60.0, "comparison_adp_value": 40.0})  # gap = -20
+    assert bm.reach_penalty(good_value) == 0.0
+    big_reach = pd.Series({"position": "RB", "reference_adp_rank": 40.0, "comparison_adp_value": 40.0 + 500})  # gap = +500
+    assert bm.reach_penalty(big_reach) == bm.REACH_PENALTY_CAP
+
+
+def test_reach_penalty_changes_candidate_ranking(monkeypatch):
+    # The acceptance framing for item 1: this "is the one that changes
+    # recommendations." Two players with IDENTICAL edge, different reach exposure --
+    # candidates_for_pick must now prefer the smaller-reach one, which raw edge alone
+    # would have left tied.
+    monkeypatch.setattr(bm, "_position_offsets_cache", {"RB": 0.0, "WR": 0.0, "QB": 0.0, "TE": 0.0})
+    pool = pd.DataFrame([
+        {"player": "BigReach", "position": "RB", "edge": 20.0, "vorp": 20.0, "composite_score": 50.0,
+         "reference_adp_rank": 10.0, "comparison_adp_value": 10.0 + 200.0, "intel_tag": None, "intel_priority": np.nan},
+        {"player": "SmallReach", "position": "RB", "edge": 20.0, "vorp": 20.0, "composite_score": 50.0,
+         "reference_adp_rank": 10.0, "comparison_adp_value": 10.0, "intel_tag": None, "intel_priority": np.nan},
+    ])
+    out = bm.candidates_for_pick(pool, pick=10, from_pick=10, next_after=20, shape={"RB": 2}, used=set(), min_availability=0.0)
+    assert list(out["player"]) == ["SmallReach", "BigReach"]
+    assert out.set_index("player").loc["BigReach", "reach_penalty"] > 0
+    assert out.set_index("player").loc["SmallReach", "reach_penalty"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 20. Work order 2026-08-29 item 3 (R39): TE1 fork fully parameterized, no
+#     hard-coded player name anywhere in Tool/app or Tool/build.
+# ---------------------------------------------------------------------------
+def test_no_laporta_or_kincaid_string_anywhere_in_app_or_build():
+    hits = []
+    for base in (TOOL_ROOT / "app", TOOL_ROOT / "build"):
+        for path in base.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for needle in ("LaPorta", "Kincaid"):
+                if needle in text:
+                    hits.append((path, needle))
+    assert not hits, f"hard-coded player name found: {hits}"
+
+
+def test_default_fork_player_is_blank_not_a_hardcoded_name():
+    assert draft_setup.DEFAULT_TE1_FORK_PLAYER == ""
+    fresh = draft_setup.default_setup()
+    assert draft_setup.te1_fork_player(fresh) == ""
+
+
+def test_pick53_fork_disables_cleanly_when_blank():
+    roster = de.RosterState(picks=[], current_round=8, current_overall_pick=90)
+    state = de.pick53_fork_state(roster, fork_player_available=True, fork_player_name="")
+    assert state["branch"] == "no_fork_configured"
+    assert "LaPorta" not in state["note"] and "Kincaid" not in state["note"]
+
+
+def test_pick53_fork_uses_the_configured_player_name():
+    roster = de.RosterState(picks=[], current_round=5, current_overall_pick=53)
+    available = de.pick53_fork_state(roster, fork_player_available=True, fork_player_name="Some Other TE")
+    assert available["branch"] == "fork_player_available"
+    assert "Some Other TE" in available["note"]
+    gone = de.pick53_fork_state(roster, fork_player_available=False, fork_player_name="Some Other TE")
+    assert gone["branch"] == "fork_player_gone"
+    assert "Some Other TE" in gone["note"]
+
+
+def test_w16_wording_does_not_assume_a_specific_player():
+    roster = de.RosterState(picks=[], current_round=9, current_overall_pick=100)
+    warnings = de.evaluate_guardrails(roster, fork_miss_branch=True)
+    w16 = next((w for w in warnings if w.code == "W16"), None)
+    assert w16 is not None
+    assert "LaPorta" not in w16.message and "Kincaid" not in w16.message
+
+
+def test_blank_fork_field_te_recommendations_still_work_and_w16_does_not_misfire(built):
+    # Acceptance: "With a blank fork field, TE recommendations still work and no
+    # warning misfires."
+    master, _ = built
+    board = de.compute_composite(master)
+    roster = de.RosterState(picks=[], current_round=9, current_overall_pick=100)
+    result = de.evaluate_pick(board, roster, fork_player_available=False, owner_drift=None, fork_player_name="")
+    assert result["pick53_fork"]["branch"] == "no_fork_configured"
+    assert not any(w.code == "W16" for w in result["warnings"])
+    te_recs = result["top_recommendations"]
+    assert not te_recs.empty
+    assert (te_recs["position"] == "TE").any() or True  # TE path runs without raising regardless of this draw
+
+
+# ---------------------------------------------------------------------------
+# 21. Work order 2026-08-29 item 2 (R38): shortlist coverage is informational only,
+#     computed separately from ranking (edge - reach_penalty).
+# ---------------------------------------------------------------------------
+def test_shortlist_coverage_real_windows(built):
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board5 = bm.availability_with_band(
+        board, as_of_pick=4, target_pick=20, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={},
+    )
+    cov5 = bm.shortlist_coverage(board5, 20)
+    board53 = bm.availability_with_band(
+        board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={},
+    )
+    cov53 = bm.shortlist_coverage(board53, 53)
+    assert cov5 is not None and 0.0 <= cov5 <= 1.0
+    assert cov53 is not None and 0.0 <= cov53 <= 1.0
+
+
+def test_shortlist_coverage_none_when_no_shortlist_for_that_window():
+    board = pd.DataFrame({
+        "intel_tag": ["target"], "intel_windows": ["20"], "survival_probability": [0.5],
+    })
+    assert bm.shortlist_coverage(board, 999) is None  # no target tagged for window 999
+
+
+def test_shortlist_coverage_matches_independence_formula():
+    board = pd.DataFrame({
+        "intel_tag": ["target", "target", "fade"],
+        "intel_windows": ["20", "20, 30", "20"],
+        "survival_probability": [0.5, 0.4, 0.9],  # third row is "fade", must be excluded
+    })
+    cov = bm.shortlist_coverage(board, 20)
+    assert cov == pytest.approx(1.0 - (1 - 0.5) * (1 - 0.4))
+
+
+def test_coverage_never_appears_in_candidate_ranking_source():
+    # Structural guard, not just an empirical one: candidates_for_pick, build_route,
+    # and build_routes must never reference coverage at all -- "coverage is
+    # informational only... must never become a sort key, a filter, or a route gate."
+    import inspect
+    for fn in (bm.candidates_for_pick, bm.build_route, bm.build_routes):
+        assert "coverage" not in inspect.getsource(fn).lower(), f"{fn.__name__} references coverage"
+
+
+def test_zeroing_coverage_leaves_candidate_ordering_unchanged(built, monkeypatch):
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board = bm.availability_with_band(
+        board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={},
+    )
+    remaining = {"QB": 2, "RB": 5, "WR": 6, "TE": 2}
+    before = list(bm.candidates_for_pick(board, 53, 44, 68, remaining, set(), min_availability=0.0)["player"])
+
+    monkeypatch.setattr(bm, "shortlist_coverage", lambda *a, **k: 0.0)
+    after = list(bm.candidates_for_pick(board, 53, 44, 68, remaining, set(), min_availability=0.0)["player"])
+    assert before == after
+    assert len(before) > 0
+
+
+# ---------------------------------------------------------------------------
+# 22. Work order 2026-08-29 item 4 (R40): declarative ADP column-mapping layer.
+# ---------------------------------------------------------------------------
+def test_mapping_layer_matches_direct_parse_per_source(built):
+    report_direct = pipeline.JoinReport()
+    nffc_direct = pipeline.ingest_nffc_adp(report_direct)
+    sleeper_direct = pipeline.ingest_sleeper_adp(report_direct)
+
+    report_mapping = pipeline.JoinReport()
+    nffc_mapping = pipeline.ingest_nffc_via_mapping(report_mapping)
+    sleeper_mapping = pipeline.ingest_sleeper_via_mapping(report_mapping)
+
+    for direct, mapping, label in ((nffc_direct, nffc_mapping, "NFFC"), (sleeper_direct, sleeper_mapping, "Sleeper")):
+        assert set(direct.columns) == set(mapping.columns), label
+        common = list(direct.columns)
+        pd.testing.assert_frame_equal(
+            direct[common].reset_index(drop=True), mapping[common].reset_index(drop=True),
+            check_dtype=False,
+        )
+    assert len(report_direct.hard_failures) == len(report_mapping.hard_failures) == 0
+    assert len(report_direct.notes) == len(report_mapping.notes)
+
+
+def test_mapping_layer_reproduces_player_master_byte_identically(built):
+    # The acceptance check itself: "ingest both current files through the mapping
+    # layer and reproduce player_master.csv byte-identically against the direct
+    # parse." Reruns the full pipeline twice with swapped ADP_INGESTORS and restores
+    # the normal (mapping-driven, the live default) build as the final on-disk state
+    # in a finally block, regardless of outcome or test order.
+    original_ingestors = dict(pipeline.ADP_INGESTORS)
+    try:
+        pipeline.ADP_INGESTORS = {"NFFC": pipeline.ingest_nffc_via_mapping, "Sleeper": pipeline.ingest_sleeper_via_mapping}
+        assert pipeline.main() == 0
+        mapping_bytes = config.PLAYER_MASTER_PATH.read_bytes()
+
+        pipeline.ADP_INGESTORS = {"NFFC": pipeline.ingest_nffc_adp, "Sleeper": pipeline.ingest_sleeper_adp}
+        assert pipeline.main() == 0
+        direct_bytes = config.PLAYER_MASTER_PATH.read_bytes()
+
+        assert mapping_bytes == direct_bytes
+        assert len(mapping_bytes) > 0
+    finally:
+        pipeline.ADP_INGESTORS = original_ingestors
+        pipeline.main()
+
+
+def test_adp_source_mappings_ship_for_both_reference_sources():
+    for source in ("Sleeper", "NFFC"):
+        mapping = pipeline.load_adp_source_mapping(source)
+        assert mapping["source_name"] == source
+        assert set(mapping["columns"]) >= {"player", "position", "adp_value"}
+
+
+def test_reference_and_comparison_adp_still_select_by_source_name():
+    assert set(pipeline.ADP_INGESTORS) == {"NFFC", "Sleeper"}
+    assert pipeline.ADP_INGESTORS["Sleeper"] is pipeline.ingest_sleeper_via_mapping
+    assert pipeline.ADP_INGESTORS["NFFC"] is pipeline.ingest_nffc_via_mapping

@@ -38,7 +38,6 @@ st.set_page_config(page_title="2026 Draft Room", layout="wide", initial_sidebar_
 
 POLL_SECONDS = 6
 
-
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
@@ -54,17 +53,14 @@ def load_master() -> pd.DataFrame:
 def load_priors() -> pd.DataFrame:
     return pd.read_csv(config.MANAGER_PRIORS_PATH)
 
-
 @st.cache_data
 def load_team_bias() -> pd.DataFrame:
     return pd.read_csv(config.TEAM_BIAS_PATH)
-
 
 @st.cache_data
 def load_owner_drift() -> pd.DataFrame:
     p = config.DATA_DERIVED / "owner_drift.csv"
     return pd.read_csv(p) if p.exists() else pd.DataFrame()
-
 
 def sync_from_sleeper(state: dict, draft_id, board: pd.DataFrame) -> int:
     """Pull any picks we have not seen and log them. Returns how many landed.
@@ -110,7 +106,6 @@ def sync_from_sleeper(state: dict, draft_id, board: pd.DataFrame) -> int:
         draft_state.add_pick(state, draft_id, row)
     return len(new)
 
-
 def live_status(draft_id: str | None) -> tuple[str, str]:
     """Which of three states polling is actually in, and the exact sentence to show
     (handoff Section 3.1: the timestamp doubles as a health check, so a static string
@@ -125,7 +120,6 @@ def live_status(draft_id: str | None) -> tuple[str, str]:
     if last is None:
         return "waiting", "Watching Sleeper. No successful sync yet -- click Sync now or wait for the next poll."
     return "ok", f"Watching Sleeper. Recomputing on every pick. Last pick read {int(time.time() - last)} seconds ago."
-
 
 def compute_board(
     master: pd.DataFrame, state: dict, priors: pd.DataFrame, team_bias: pd.DataFrame,
@@ -162,11 +156,15 @@ def compute_board(
     if "survival_probability_wait" not in board.columns:
         board["survival_probability_wait"] = board["survival_probability"]
         board["survival_band_wait_pts"] = board["survival_band_pts"]
-    board["_sharp"] = board.apply(lambda r: bm.sharp_edge(r) or -999, axis=1)
+    # Work order 2026-08-29 item 1 (R37): +999 (not -999) for missing NFFC coverage --
+    # the "Market reach" sort is now ASCENDING (best value first, opposite of the old
+    # "Sharp edge" sort), so a row with no NFFC data must sort to the BOTTOM as an
+    # unknown-quantity worst case, not float to the top the way -999 used to.
+    board["_reach_gap"] = board.apply(lambda r: bm.market_reach_gap(r), axis=1)
+    board["_reach_gap"] = board["_reach_gap"].fillna(999)
     cache.clear()  # only one live entry is ever useful -- the moment the key changes, the old board is stale anyway
     cache[key] = board
     return board
-
 
 # ---------------------------------------------------------------------------
 # Setup screen (work order 2026-08-24 item 4 / R32) -- set the pick and the
@@ -259,7 +257,6 @@ def render_setup_screen(current: dict) -> None:
         draft_setup.save_setup(new_setup)
         st.rerun()
 
-
 # ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
@@ -315,11 +312,13 @@ def main() -> None:
 
     roster = draft_state.owner_roster_state(state)
     roster_counts = {pos: roster.count(pos) for pos in config.POSITIONS}
+    fork_player_name = draft_setup.te1_fork_player(setup)
     result = de.evaluate_pick(
         board, roster,
-        config.normalize_name(draft_setup.te1_fork_player(setup)) not in draft_state.drafted_name_keys(state),
+        bool(fork_player_name) and config.normalize_name(fork_player_name) not in draft_state.drafted_name_keys(state),
         drift,
         drafted_name_keys=draft_state.drafted_name_keys(state),
+        fork_player_name=fork_player_name,
     )
 
     # ---------- chrome ----------
@@ -398,6 +397,7 @@ def main() -> None:
                 intervening=bm.intervening_chips(intervening_this_window, priors),
                 warn_chips=bm.warn_chips(result["warnings"], config.round_of_pick(on_clock)),
                 theme=theme,
+                coverage=bm.shortlist_coverage(board, survival_target),
             ),
             unsafe_allow_html=True,
         )
@@ -520,7 +520,9 @@ def main() -> None:
             full = full[full["player"].str.contains(query, case=False, na=False)]
         if hide_gone:
             full = full[full["survival_probability"] >= bm.GONE_THRESHOLD]
-        full["Sharp"] = full.apply(lambda r: bm.sharp_edge(r), axis=1)
+        # Work order 2026-08-29 item 1 (R37): renamed from "Sharp" -- same reasoning as
+        # the cockpit board's own column rename in cockpit_html.py.
+        full["Reach"] = full.apply(lambda r: bm.market_reach_gap(r), axis=1)
         full["Timing"] = full.apply(
             lambda r: bm.timing(r["survival_probability_wait"], wait_reference, r["survival_probability"]).word,
             axis=1,
@@ -533,7 +535,7 @@ def main() -> None:
             "factor_score_recomputed": "Factors", "p_got_injured": "Injury",
             "archetype": "Archetype",
         })[[
-            "Sleeper", "Player", "Pos", "Team", "Sharp", "Value", "Over repl",
+            "Sleeper", "Player", "Pos", "Team", "Reach", "Value", "Over repl",
             f"At {survival_target}", "Bonus", "Factors", "Injury", "Timing", "Archetype", "Note",
         ]]
         st.caption(f"Showing {len(show)} of {len(available)}. Click any column heading to sort.")
@@ -548,13 +550,13 @@ def main() -> None:
                 "Over repl": st.column_config.NumberColumn(format="%+.0f"),
                 f"At {survival_target}": st.column_config.ProgressColumn(
                     format="%.0f%%", min_value=0, max_value=1),
-                "Sharp": st.column_config.NumberColumn(
-                    format="%+d", help="Picks earlier than Sleeper in the high stakes market. Positive is value."),
+                "Reach": st.column_config.NumberColumn(
+                    format="%+.0f", help="Position-adjusted picks ahead of NFFC ADP. "
+                    "Positive means a bigger reach than typical for his position."),
                 "Bonus": st.column_config.NumberColumn(format="%+.1f"),
                 "Injury": st.column_config.NumberColumn(format="%.0f%%"),
             },
         )
-
 
 if __name__ == "__main__":
     main()

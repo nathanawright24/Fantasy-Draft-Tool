@@ -25,14 +25,14 @@
   "layers": {
     "implied_props": true,
     "factor_grids": true,
-    "bonus_model": true,
+    "bonus_model": false,
     "oline_rankings": true,
     "manager_priors": false,
     "nfl_team_bias": false,
-    "college_bias": true,
+    "college_bias": false,
     "archetype_priors": true,
     "player_intel": true
   },
   "te1_fork_player": "Sam LaPorta",
-  "sleeper_draft_id": "1398137421127766016"
+  "sleeper_draft_id": "1399487519753531392"
 }
