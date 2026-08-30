@@ -49,6 +49,12 @@ def default_setup() -> dict:
         "reference_is_sleeper": config.REFERENCE_ADP_FACTORY["is_sleeper"],
         "layers": {name: layer["applies"] for name, layer in config.LAYERS.items()},
         "te1_fork_player": DEFAULT_TE1_FORK_PLAYER,
+        # Work order 2026-08-29c item 5: visibility control on top of
+        # DEFAULT_TE1_FORK_PLAYER's own blank-by-default. On by default (the main
+        # league's own draft_setup.json already has a real fork player configured, so
+        # the factory default here changing behavior for THAT setup would be a
+        # regression, not a fix).
+        "show_te1_fork": True,
         "sleeper_draft_id": None,
     }
 
@@ -83,7 +89,7 @@ def apply_setup(setup: dict) -> None:
     is why every function that takes an `owner` parameter in this codebase resolves it
     from a `None` sentinel at call time instead of a frozen `= config.OWNER` default --
     see `config.owner_pick_windows`'s docstring for the full explanation."""
-    config.DRAFT_ORDER_2026[:] = setup["draft_order"]
+    config.DRAFT_ORDER_2026[:] = resolved_draft_order(setup)
     config.OWNER = setup["owner"]
     config.ROSTER_TARGET.clear()
     config.ROSTER_TARGET.update(setup["roster_target"])
@@ -94,7 +100,48 @@ def apply_setup(setup: dict) -> None:
             config.LAYERS[name]["applies"] = applies
 
 
+# Work order 2026-08-29c item 5: a blank slot is "an unmodelled manager: no
+# behavioural prior, no team or college bias, and the availability model uses the
+# generic-ADP fallback for that seat." This is already exactly what happens for ANY
+# manager name absent from manager_priors.csv/team_bias.csv/MANAGER_COLLEGE_AFFINITY
+# (simulate_intervening_picks's own `if manager in priors_by_manager.index` gate, and
+# every team/college lookup's plain dict.get default) -- no draft_engine.py change
+# needed, only a placeholder name guaranteed to never collide with a real manager.
+UNMODELLED_SLOT_LABEL = "(unmodelled seat {n})"
+
+
+def _is_blank(entry: str | None) -> bool:
+    return not entry or not str(entry).strip()
+
+
+def resolved_draft_order(setup: dict) -> list[str]:
+    """`setup["draft_order"]` with every blank slot (`None`/empty string, one per
+    slot the owner leaves unfilled) replaced by a unique placeholder name -- what
+    `config.DRAFT_ORDER_2026` and everything downstream of it (pick schedule,
+    simulation, UI chips) actually iterates over. Unique per slot (not one shared
+    "(blank)" label) so two blank seats are never aliased into the same manager
+    identity anywhere a manager name is used as a lookup key (e.g.
+    draft_state.roster_counts_by_manager)."""
+    return [
+        UNMODELLED_SLOT_LABEL.format(n=i + 1) if _is_blank(entry) else entry
+        for i, entry in enumerate(setup["draft_order"])
+    ]
+
+
+def unmodelled_slot_labels(setup: dict) -> list[str]:
+    """["Slot 3", "Slot 9", ...] (1-indexed) for every blank slot -- the "show which
+    seats are unmodelled" requirement, same role as `layers_off`'s own indicator."""
+    return [f"Slot {i + 1}" for i, entry in enumerate(setup["draft_order"]) if _is_blank(entry)]
+
+
 def te1_fork_player(setup: dict) -> str:
+    # Work order 2026-08-29c item 5: the visibility toggle makes the fork dormant
+    # regardless of what name is still stored -- reuses the exact "blank disables
+    # cleanly" mechanism work order 2026-08-29 item 3 already built (pick53_fork_state
+    # / _w16 both already treat "" as "no fork configured"), so toggling this off
+    # needs no new logic in draft_engine.py at all.
+    if not setup.get("show_te1_fork", True):
+        return ""
     return setup.get("te1_fork_player") or DEFAULT_TE1_FORK_PLAYER
 
 
@@ -110,21 +157,24 @@ def sleeper_draft_id(setup: dict) -> str | None:
     return raw.strip() or None if isinstance(raw, str) else raw
 
 
-def validate_draft_order(order: list[str], expected_names: list[str]) -> str | None:
-    """None if `order` is a valid permutation of `expected_names`; otherwise a
-    plain-language reason, for the setup form to show instead of crashing on a
-    half-edited list."""
+def validate_draft_order(order: list[str | None], expected_names: list[str]) -> str | None:
+    """None if `order` is valid; otherwise a plain-language reason, for the setup form
+    to show instead of crashing on a half-edited list.
+
+    Work order 2026-08-29c item 5: blank slots (`None`/empty string -- "leave a draft
+    slot blank if someone from the main league isn't in that slot") are now allowed,
+    any number of them, so this is no longer "must be an exact permutation of
+    expected_names": every NAMED slot must still be a recognized, non-repeated name,
+    but the named slots no longer have to cover every name in `expected_names`."""
     if len(order) != len(expected_names):
-        return f"Expected {len(expected_names)} names, got {len(order)}."
-    if sorted(order) != sorted(expected_names):
-        missing = sorted(set(expected_names) - set(order))
-        extra = sorted(set(order) - set(expected_names))
-        parts = []
-        if missing:
-            parts.append(f"missing {missing}")
-        if extra:
-            parts.append(f"unrecognized {extra}")
-        return "Draft order must contain exactly these names, each once: " + "; ".join(parts)
+        return f"Expected {len(expected_names)} slots, got {len(order)}."
+    named = [o for o in order if not _is_blank(o)]
+    dupes = sorted({o for o in named if named.count(o) > 1})
+    if dupes:
+        return f"Each name may only be used once. Repeated: {dupes}."
+    unknown = sorted(set(named) - set(expected_names))
+    if unknown:
+        return f"Unrecognized name(s): {unknown}."
     return None
 
 

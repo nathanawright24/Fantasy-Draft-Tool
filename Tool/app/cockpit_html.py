@@ -334,13 +334,21 @@ def render_route_card(route: dict, index: int, this_pick: int, wait_reference: i
         avail if on_clock else bm.survival_between(a, this_pick, wait_reference)
     )
     tm = bm.timing(wait, wait_reference, 1.0 if on_clock else avail)
+    # Work order 2026-08-29c item 8 (R44): pessimistic quantile PRIMARY ("assume the
+    # value gets taken"), optimistic (the point estimate) kept alongside in a smaller,
+    # muted figure -- "a roadmap that is always worst-case will read as noise within
+    # two rounds." Explicitly labeled ("worst-case") rather than a bare percentage,
+    # per the work order's own "label it as such on screen."
     legs = "".join(
         f'<div style="display:flex;gap:8px;font-size:12px;line-height:1.4">'
         f'<span style="width:30px;color:{t["faint"]}" class="nk-num">{l["pick"]}</span>'
         f'<span style="width:6px;height:6px;border-radius:50%;margin-top:6px;'
         f'background:{bm.POSITION_COLORS.get(l["position"], t["muted"])}"></span>'
         f'<span style="flex:1">{html.escape(l["player"])}</span>'
-        f'<span style="color:{t["muted"]}" class="nk-num">{l["odds"]*100:.0f}%</span></div>'
+        f'<span style="color:{t["muted"]}" class="nk-num">'
+        f'{l.get("odds_pessimistic", l["odds"]) * 100:.0f}%'
+        f'<span style="font-size:9px;color:{t["faint"]}" title="optimistic (point estimate)">'
+        f' (opt {l.get("odds_optimistic", l["odds"]) * 100:.0f}%)</span></span></div>'
         for l in route["legs"]
     )
     short = {k: v for k, v in route["shape_left"].items() if v > 0}
@@ -367,7 +375,10 @@ def render_route_card(route: dict, index: int, this_pick: int, wait_reference: i
       <div style="font-size:11px;color:{t['muted']}">{bm.POSITION_WORDS[pos]} &nbsp; {html.escape(str(a['nfl_team']))}
         &nbsp; Sleeper {'' if pd.isna(a['reference_adp_rank']) else int(a['reference_adp_rank'])}</div>
     </div>
-    <div style="flex:1">{legs}</div>
+    <div style="flex:1">
+      <div class="nk-kicker" style="font-size:9px">Worst-case odds still there</div>
+      {legs}
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;
        padding-top:8px;border-top:1px solid {t['line_soft']}">

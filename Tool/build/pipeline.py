@@ -727,6 +727,43 @@ def compute_manager_priors(report: JoinReport) -> tuple[pd.DataFrame, pd.DataFra
     return summary_df, per_draft_df
 
 
+def compute_round_band_position_shares(report: JoinReport) -> pd.DataFrame:
+    """Work order 2026-08-29c item 7 (R43): "encode the round-band positional appetite
+    empirically from drafts/all_draft_picks_2022-2025.csv rather than as a hand-set
+    constant... recompute each season; it is a property of the league, not a number
+    to paste." Main league only (the owner's own request: "assume a running back
+    hungry market, feel free to scrape the old drafts to prove this fact" was scoped
+    to the main league he actually drafts in, matching manager_priors/team_bias's own
+    `league == "main"` convention elsewhere in this function's neighbors).
+
+    One row per (round_band, position): the position's share of picks made inside
+    that band, across all 4 seasons on file, recomputed from the raw picks every
+    build rather than pasted once and left to drift. `config.ROUND_BANDS` is the
+    single source of truth for the band boundaries.
+    """
+    picks = pd.read_csv(config.ALL_DRAFT_PICKS_PATH)
+    main = picks[picks["league"] == "main"]
+
+    rows = []
+    for label, lo, hi in config.ROUND_BANDS:
+        band = main[(main["round"] >= lo) & (main["round"] <= hi)]
+        n_band = len(band)
+        shares = band["pos"].value_counts(normalize=True) * 100.0 if n_band else pd.Series(dtype=float)
+        for pos in config.POSITIONS:
+            rows.append({
+                "round_band": label, "round_lo": lo, "round_hi": hi, "position": pos,
+                "share_pct": round(float(shares.get(pos, 0.0)), 1), "n_picks_in_band": n_band,
+            })
+    df = pd.DataFrame(rows)
+    config.DATA_DERIVED.mkdir(parents=True, exist_ok=True)
+    df.to_csv(config.ROUND_BAND_POSITION_SHARES_PATH, index=False)
+    report.note(
+        f"round_band_position_shares: {len(main)} main-league picks across "
+        f"{main['season'].nunique()} seasons, {len(config.ROUND_BANDS)} bands."
+    )
+    return df
+
+
 def compute_team_bias(report: JoinReport) -> pd.DataFrame:
     picks = pd.read_csv(config.ALL_DRAFT_PICKS_PATH)
     picks = picks[picks["pos"] != "DEF"]
@@ -1148,6 +1185,7 @@ def main() -> int:
     print("Computing manager priors and team bias from historical picks...")
     compute_manager_priors(report)
     compute_team_bias(report)
+    compute_round_band_position_shares(report)
 
     print("Building player_master.csv...")
     master = build_player_master(props_all, priors_all, oline_df, ref_df, cmp_df, college_df, intel_df, report)

@@ -180,22 +180,36 @@ def render_setup_screen(current: dict) -> None:
         "re-running the data build."
     )
     factory_names = list(config.DRAFT_ORDER_2026_FACTORY)
+    # Work order 2026-08-29c item 5: "leave a draft slot blank if someone from the
+    # main league isn't in that slot" (the alt-league carryover case). Sentinel only
+    # exists in this dropdown -- converted to None (draft_setup.validate_draft_order's
+    # own blank convention) below, before anything is validated or saved.
+    BLANK_OPTION = "(blank / unmodelled)"
 
     with st.form("draft_setup_form"):
         st.subheader("Draft order")
-        st.caption("Twelve slots, snake order. Pick who sits in each.")
-        order = []
+        st.caption(
+            "Twelve slots, snake order. Pick who sits in each, or leave a slot blank if "
+            "nobody from this list occupies it -- a blank seat gets no behavioural prior, "
+            "no team/college bias, and falls back to the generic ADP model."
+        )
+        raw_order = []
         for row_start in (0, 6):
             cols = st.columns(6)
             for i, col in enumerate(cols):
                 slot = row_start + i
                 default = current["draft_order"][slot] if slot < len(current["draft_order"]) else factory_names[slot]
-                order.append(col.selectbox(f"Slot {slot + 1}", factory_names,
-                                            index=factory_names.index(default) if default in factory_names else slot,
-                                            key=f"slot_{slot}"))
+                choices = [BLANK_OPTION] + factory_names
+                index = choices.index(default) if default in factory_names else 0
+                raw_order.append(col.selectbox(f"Slot {slot + 1}", choices, index=index, key=f"slot_{slot}"))
+        order = [None if sel == BLANK_OPTION else sel for sel in raw_order]
 
         st.subheader("Owner")
-        owner = st.selectbox("Which slot is mine", order, index=order.index(current["owner"]) if current["owner"] in order else 0)
+        real_slots = [o for o in order if o] or factory_names  # never leave the picker empty
+        owner = st.selectbox(
+            "Which slot is mine", real_slots,
+            index=real_slots.index(current["owner"]) if current["owner"] in real_slots else 0,
+        )
 
         st.subheader("Roster targets")
         rcols = st.columns(4)
@@ -225,10 +239,18 @@ def render_setup_screen(current: dict) -> None:
             layers[name] = lcols[i % 3].checkbox(name.replace("_", " "), value=current["layers"].get(name, True))
 
         st.subheader("Tight end fork player")
-        te1_fork_player = st.text_input(
-            "The named player the pick-53-style TE fork is built around",
-            value=current.get("te1_fork_player", draft_setup.DEFAULT_TE1_FORK_PLAYER),
-        )
+        # Work order 2026-08-29c item 5: visibility control on top of
+        # DEFAULT_TE1_FORK_PLAYER's own blank-by-default -- off hides the field
+        # entirely (not just clears it) and makes W16 dormant via
+        # draft_setup.te1_fork_player's own toggle check, with no draft_engine.py
+        # change needed (reuses the existing "blank disables cleanly" mechanism).
+        show_te1_fork = st.checkbox("Show TE1 fork", value=current.get("show_te1_fork", True))
+        te1_fork_player = current.get("te1_fork_player", draft_setup.DEFAULT_TE1_FORK_PLAYER)
+        if show_te1_fork:
+            te1_fork_player = st.text_input(
+                "The named player the pick-53-style TE fork is built around",
+                value=te1_fork_player,
+            )
 
         submitted = st.form_submit_button("Save and continue", use_container_width=True)
 
@@ -240,7 +262,7 @@ def render_setup_screen(current: dict) -> None:
         new_setup = {
             "draft_order": order, "owner": owner, "roster_target": roster_target,
             "reference_source_name": reference_source_name, "reference_is_sleeper": reference_is_sleeper,
-            "layers": layers, "te1_fork_player": te1_fork_player,
+            "layers": layers, "te1_fork_player": te1_fork_player, "show_te1_fork": show_te1_fork,
             "sleeper_draft_id": sleeper_draft_id.strip() or None,
         }
         if new_setup["sleeper_draft_id"] != draft_setup.sleeper_draft_id(current):
@@ -495,6 +517,17 @@ def main() -> None:
                 f"margin-top:10px;padding-top:6px;border-top:1px solid {theme['line_soft']}'>{layers_line}</div>",
                 unsafe_allow_html=True,
             )
+            # Work order 2026-08-29c item 5: "show which seats are unmodelled -- the
+            # same requirement as the layers indicator." Same always-visible-status
+            # treatment as layers_line just above, not a one-time setup-screen note.
+            unmodelled = draft_setup.unmodelled_slot_labels(setup)
+            if unmodelled:
+                st.markdown(
+                    f"<div style='font-size:11px;color:{theme['warn']};margin-top:4px'>"
+                    f"{len(unmodelled)} unmodelled seat{'s' if len(unmodelled) != 1 else ''}: "
+                    f"{', '.join(unmodelled)} (generic ADP fallback, no manager prior).</div>",
+                    unsafe_allow_html=True,
+                )
 
         st.markdown("<div class='nk-kicker' style='margin-top:10px'>"
                     "Every rule, and the round it starts watching</div>", unsafe_allow_html=True)
@@ -523,6 +556,13 @@ def main() -> None:
         # Work order 2026-08-29 item 1 (R37): renamed from "Sharp" -- same reasoning as
         # the cockpit board's own column rename in cockpit_html.py.
         full["Reach"] = full.apply(lambda r: bm.market_reach_gap(r), axis=1)
+        # Work order 2026-08-29c item 3: the "no market" flag itself -- excluded from
+        # suggestions/routes already (board_model.candidates_for_pick), but still shown
+        # here, explicitly, rather than silently vanishing from the full board too.
+        full["Market"] = full.apply(
+            lambda r: {"no_market": "No market", "partial_market": "Partial"}.get(bm.market_coverage_flag(r), ""),
+            axis=1,
+        )
         full["Timing"] = full.apply(
             lambda r: bm.timing(r["survival_probability_wait"], wait_reference, r["survival_probability"]).word,
             axis=1,
@@ -535,7 +575,7 @@ def main() -> None:
             "factor_score_recomputed": "Factors", "p_got_injured": "Injury",
             "archetype": "Archetype",
         })[[
-            "Sleeper", "Player", "Pos", "Team", "Reach", "Value", "Over repl",
+            "Sleeper", "Player", "Pos", "Team", "Market", "Reach", "Value", "Over repl",
             f"At {survival_target}", "Bonus", "Factors", "Injury", "Timing", "Archetype", "Note",
         ]]
         st.caption(f"Showing {len(show)} of {len(available)}. Click any column heading to sort.")
@@ -550,6 +590,10 @@ def main() -> None:
                 "Over repl": st.column_config.NumberColumn(format="%+.0f"),
                 f"At {survival_target}": st.column_config.ProgressColumn(
                     format="%.0f%%", min_value=0, max_value=1),
+                "Market": st.column_config.TextColumn(
+                    help="No market: missing from BOTH Sleeper and NFFC -- excluded from "
+                    "suggestions and routes (likely injury, suspension, or camp casualty). "
+                    "Partial: missing from one source -- still eligible, survival widened."),
                 "Reach": st.column_config.NumberColumn(
                     format="%+.0f", help="Position-adjusted picks ahead of NFFC ADP. "
                     "Positive means a bigger reach than typical for his position."),

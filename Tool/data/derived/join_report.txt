@@ -1,10 +1,10 @@
-Join report -- generated 2026-08-29T13:33:27
+Join report -- generated 2026-08-29T16:00:30
 ==============================================================================
 
 HARD FAILURES (0) -- these must be fixed before shipping
 ------------------------------------------------------------------------------
 
-NOTES / FLAGGED (130) -- unmatched names, coverage boundaries,
+NOTES / FLAGGED (131) -- unmatched names, coverage boundaries,
 low-sample flags. Never suppressed; eyeball before trusting a build.
 ------------------------------------------------------------------------------
   - priors/QB: rekeyed 'Cam Ward' to props' 'cameron ward' via NAME_ALIASES -- same real join key from here on, so both the team backfill and the player_master merge pick up the props row
@@ -130,6 +130,7 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - manager_priors: 'Nathan' shows a >=3-round main-vs-alt divergence at QB or TE -- model as bimodal, do not average into a false middle
   - manager_priors: 'Tyler' has only 1 main-league draft on file -- widen variance
   - team_bias: computed from 611 historical picks; 88 manager/team pairs show a >=1.5x or <=0.5x bias ratio against league-wide expectation.
+  - round_band_position_shares: 792 main-league picks across 4 seasons, 4 bands.
   - QB: 8 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - RB: 75 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - TE: 48 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure

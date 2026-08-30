@@ -5,8 +5,9 @@ composite ranking, and the active warnings together, and one file means one plac
 look when something's wrong mid-draft.
 
 Pure functions over player_master.csv-shaped DataFrames and plain-python roster state.
-No file I/O in this module except for reading the two small derived CSVs
-(manager_priors.csv, team_bias.csv) that back the availability model.
+No file I/O in this module except for reading the small derived CSVs
+(manager_priors.csv, team_bias.csv, adp_source_offsets.csv) that back the
+availability model.
 """
 from __future__ import annotations
 
@@ -278,6 +279,11 @@ def _fit_lognormal_from_adp(
     Falls back to `secondary_anchor` when `primary_anchor` is missing, and to a fixed
     generic sigma when the dispersion source's empirical range is also missing,
     degenerate, or (per `_ADP_SOURCE_FIELDS`) simply doesn't exist for that source.
+    That generic sigma is WIDENED (work order 2026-08-29c item 3) specifically when
+    `dispersion_value` itself is missing -- this player isn't in the dispersion
+    source's market AT ALL, not merely thin-sampled there (which still leaves the
+    plain generic sigma as the honest answer) -- so a player covered by only one
+    market never reads as equally certain as one the market actually priced twice.
     Returns (mu, sigma, used_secondary_anchor) -- the third element is the "which
     anchor did this row use" flag the UI surfaces.
     """
@@ -292,6 +298,8 @@ def _fit_lognormal_from_adp(
     mu = math.log(anchor_value)
 
     sigma = config.GENERIC_LOGNORMAL_SIGMA
+    if pd.isna(dispersion_value):
+        sigma *= config.PARTIAL_MARKET_SIGMA_WIDEN
     have_range = (
         pd.notna(dispersion_n) and dispersion_n >= 2
         and pd.notna(dispersion_min) and pd.notna(dispersion_max)
@@ -386,6 +394,10 @@ def _lognormal_fit_arrays(pool: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, n
         mu_arr[has_fit] = np.log(anchor[has_fit])
 
     sigma_arr = np.full(n, config.GENERIC_LOGNORMAL_SIGMA)
+    # Work order 2026-08-29c item 3: widen the generic fallback for a row missing the
+    # dispersion source's value ENTIRELY (not just thin-sampled there) -- same
+    # condition as _fit_lognormal_from_adp's own widen, vectorized.
+    sigma_arr[~np.isfinite(disp_value)] *= config.PARTIAL_MARKET_SIGMA_WIDEN
     have_range = (
         has_fit & np.isfinite(disp_n) & (disp_n >= 2)
         & np.isfinite(disp_min) & np.isfinite(disp_max) & (disp_max > disp_min) & (disp_min > 0)
@@ -438,35 +450,50 @@ def _pick_hazard_vector(pool_size: int, overall_pick: int, mu_arr, sigma_arr, ha
     return np.clip(hz, 1e-9, 50.0)
 
 
-def _hazard_matrix_for_subset(effective_picks: np.ndarray, mu_sub, sigma_sub, has_fit_sub, rank_sub) -> np.ndarray:
+def _hazard_matrix_for_subset(
+    effective_picks: np.ndarray, mu_sub, sigma_sub, has_fit_sub, rank_sub, value_shift_sub: np.ndarray | None = None
+) -> np.ndarray:
     """Same hazard as `_pick_hazard_vector`, but for a SUBSET of the pool (one
     position's players) and with one effective pick number PER SIMULATION RUN rather
     than a single shared one -- `effective_picks` has shape (n_sims,), already shifted
     by that pick's reach draw (work order 2026-08-24 item 3, R31). Returns
     (n_sims, len(mu_sub)). Broadcasting the (n_sims, 1) pick column against the
     (1, n_sub) per-player fit arrays is what makes 2000 simulations cost one vectorized
-    scipy call instead of 2000 Python-level ones."""
+    scipy call instead of 2000 Python-level ones.
+
+    `value_shift_sub` (work order 2026-08-29c item 8, R44), when given, is a SECOND,
+    PER-PLAYER shift (shape (n_sub,), deterministic, not a random draw) added on top
+    of the per-simulation manager-level reach draw -- "reach probability rises with
+    the player's position-adjusted value gap." Combining the two turns the single
+    (n_sims, 1) column into a full (n_sims, n_sub) matrix; every caller that omits it
+    (`value_shift_sub=None`) gets the exact prior broadcast, unchanged.
+    """
     n_sims = len(effective_picks)
     n_sub = len(mu_sub)
     hz = np.zeros((n_sims, n_sub))
     if n_sub == 0:
         return hz
-    x = np.clip(effective_picks, 1e-6, None)[:, None]
+    base_x = effective_picks[:, None]
+    x = np.clip(base_x if value_shift_sub is None else base_x + value_shift_sub[None, :], 1e-6, None)
+    x = np.broadcast_to(x, (n_sims, n_sub))
     if has_fit_sub.any():
         s = sigma_sub[has_fit_sub][None, :]
         scale = np.exp(mu_sub[has_fit_sub])[None, :]
-        sf = np.clip(lognorm.sf(x, s=s, scale=scale), 1e-9, None)
-        pdf = lognorm.pdf(x, s=s, scale=scale)
+        x_fit = x[:, has_fit_sub]
+        sf = np.clip(lognorm.sf(x_fit, s=s, scale=scale), 1e-9, None)
+        pdf = lognorm.pdf(x_fit, s=s, scale=scale)
         hz[:, has_fit_sub] = pdf / sf
     generic = ~has_fit_sub
     if generic.any():
         rk = rank_sub[generic]
         has_rank = ~np.isnan(rk)
+        x_gen = x[:, generic]
         out = np.full((n_sims, int(generic.sum())), 1.0 / (config.N_TEAMS * config.N_ROUNDS))
         if has_rank.any():
             loc = rk[has_rank][None, :]
-            sf = np.clip(norm.sf(x, loc=loc, scale=config.GENERIC_ADP_SPREAD_PICKS), 1e-9, None)
-            pdf = norm.pdf(x, loc=loc, scale=config.GENERIC_ADP_SPREAD_PICKS)
+            x_gen_ranked = x_gen[:, has_rank]
+            sf = np.clip(norm.sf(x_gen_ranked, loc=loc, scale=config.GENERIC_ADP_SPREAD_PICKS), 1e-9, None)
+            pdf = norm.pdf(x_gen_ranked, loc=loc, scale=config.GENERIC_ADP_SPREAD_PICKS)
             out[:, has_rank] = pdf / sf
         hz[:, generic] = out
     return np.clip(hz, 1e-9, 50.0)
@@ -492,6 +519,60 @@ def _reach_draws(rng: np.random.Generator, n_sims: int, manager: str, widen: boo
         std_r *= config.REACH_NEED_WIDEN_STD_MULT
     draws = rng.normal(mean_r, std_r, size=n_sims)
     return np.clip(draws, -config.REACH_MAX_PICKS, config.REACH_MAX_PICKS)
+
+
+_position_offsets_cache_reach: dict[str, float] | None = None
+
+
+def _position_offsets_for_reach() -> dict[str, float]:
+    """Same data board_model._position_offsets() reads (data/derived/adp_source_
+    offsets.csv, R27) -- duplicated here (a few lines) rather than imported, since
+    board_model already imports this module and importing back would be circular.
+    Cached the same way."""
+    global _position_offsets_cache_reach
+    if _position_offsets_cache_reach is None:
+        path = config.ADP_SOURCE_OFFSETS_PATH
+        if path.exists():
+            df = pd.read_csv(path)
+            _position_offsets_cache_reach = {
+                row["position"]: -float(row["mean_offset_reference_minus_comparison"])
+                for _, row in df.iterrows()
+            }
+        else:
+            _position_offsets_cache_reach = {}
+    return _position_offsets_cache_reach
+
+
+# Work order 2026-08-29c item 8 (R44): "assume a market slightly sharper than ADP --
+# if there's glaring values in pockets of the draft vs sleeper ADP, assume that
+# managers will reach on them." Bounded, documented, not fit to the backtest -- same
+# precedent as REACH_PENALTY_WEIGHT/CAP.
+VALUE_SEEKING_REACH_WEIGHT = 0.3  # picks of extra forward shift per point of position-adjusted value
+VALUE_SEEKING_REACH_CAP = 10.0    # picks
+
+
+def _value_seeking_shift_array(pool: pd.DataFrame) -> np.ndarray:
+    """Per-player, DETERMINISTIC (not a random draw) effective-pick shift -- "reach
+    probability rises with the player's position-adjusted value gap." Only players
+    with a NEGATIVE position-adjusted gap count (board_model.market_reach_gap's own
+    sign convention: negative means better-than-typical value for the position;
+    positive already reads as a bigger-than-typical reach and gets nothing extra
+    here -- this is "assume managers reach on values," not a symmetric adjustment in
+    both directions). Explicitly NOT stacked with item 7's RB market-shape work: this
+    reads market_reach_gap, a per-PLAYER signal already netted against the position's
+    own average gap; item 7's round-band shares are a per-POSITION, per-ROUND pace
+    signal consumed entirely inside board_model.pace_urgency, a different number this
+    function never touches.
+    """
+    nffc = pool.get("comparison_adp_value", pd.Series(np.nan, index=pool.index)).to_numpy(dtype=float)
+    sleeper = pool.get("reference_adp_rank", pd.Series(np.nan, index=pool.index)).to_numpy(dtype=float)
+    positions = pool["position"].to_numpy()
+    offsets = _position_offsets_for_reach()
+    offset_arr = np.array([offsets.get(p, 0.0) for p in positions])
+    has_both = ~np.isnan(nffc) & ~np.isnan(sleeper)
+    raw_gap = np.where(has_both, nffc - sleeper - offset_arr, 0.0)
+    value = np.maximum(0.0, -raw_gap)
+    return np.minimum(value * VALUE_SEEKING_REACH_WEIGHT, VALUE_SEEKING_REACH_CAP)
 
 
 def _position_is_thinning(pool: pd.DataFrame, pos: str) -> bool:
@@ -524,10 +605,15 @@ def _pick_weight_matrix(
     thinning: dict[str, bool],
     owner_roster_by_manager: dict,
     rng: np.random.Generator,
+    value_shift_arr: np.ndarray | None = None,
 ) -> np.ndarray:
     """(n_sims, pool_size) reach-aware hazard for one intervening pick -- one position
     group at a time, because the reach draw (and whether it widens) is a property of
-    (manager, position), not of the pick as a whole."""
+    (manager, position), not of the pick as a whole.
+
+    `value_shift_arr` (work order 2026-08-29c item 8, R44): the per-player,
+    deterministic value-seeking shift (`_value_seeking_shift_array`), layered on top
+    of each simulation's own manager-level reach draw."""
     n = len(pos_codes)
     hz = np.zeros((n_sims, n))
     pos_index = {p: i for i, p in enumerate(config.POSITIONS)}
@@ -538,12 +624,18 @@ def _pick_weight_matrix(
         widen = thinning.get(pos, False) and _manager_has_unfilled_need(owner_roster_by_manager, manager, pos)
         draws = _reach_draws(rng, n_sims, manager, widen)
         eff = overall_pick + draws
-        hz[:, pmask] = _hazard_matrix_for_subset(eff, mu_arr[pmask], sigma_arr[pmask], has_fit[pmask], rank_arr[pmask])
+        value_sub = value_shift_arr[pmask] if value_shift_arr is not None else None
+        hz[:, pmask] = _hazard_matrix_for_subset(
+            eff, mu_arr[pmask], sigma_arr[pmask], has_fit[pmask], rank_arr[pmask], value_sub
+        )
     other = pos_codes == -1  # defensive: pool is normally pre-filtered to config.POSITIONS
     if other.any():
         draws = _reach_draws(rng, n_sims, manager, False)
         eff = overall_pick + draws
-        hz[:, other] = _hazard_matrix_for_subset(eff, mu_arr[other], sigma_arr[other], has_fit[other], rank_arr[other])
+        value_sub = value_shift_arr[other] if value_shift_arr is not None else None
+        hz[:, other] = _hazard_matrix_for_subset(
+            eff, mu_arr[other], sigma_arr[other], has_fit[other], rank_arr[other], value_sub
+        )
     return hz
 
 
@@ -699,6 +791,12 @@ def simulate_intervening_picks(
     rank_arr = pool.get("reference_adp_rank", pd.Series(np.nan, index=pool.index)).to_numpy(dtype=float)
     mu_arr, sigma_arr, has_fit = _lognormal_fit_arrays(pool)
     vorp_arr = pool.get("vorp", pd.Series(0.0, index=pool.index)).fillna(0.0).to_numpy(dtype=float) if want_edge else None
+    # Work order 2026-08-29c item 8 (R44): computed once per window, same reasoning as
+    # `thinning` just below -- a static property of the pool at window entry, not
+    # re-derived per simulated pick. This function only ever runs from inside
+    # compute_availability's own manager_priors-gated branch, so no separate
+    # layer_on() check is needed here.
+    value_shift_arr = _value_seeking_shift_array(pool)
 
     priors_by_manager = manager_priors.set_index("manager")
     league_avg_row = pd.Series(_league_average_rates(manager_priors, owner))
@@ -730,7 +828,7 @@ def simulate_intervening_picks(
             bias_cache[manager] = _bias_multiplier_array(pool, manager, team_bias_lookup, owner_colleges)
         hz = _pick_weight_matrix(
             n_sims, overall, manager, pos_codes, mu_arr, sigma_arr, has_fit, rank_arr,
-            thinning, owner_roster_by_manager, rng,
+            thinning, owner_roster_by_manager, rng, value_shift_arr,
         )
         weight_matrix[k] = hz * bias_cache[manager][None, :]
 
@@ -951,6 +1049,14 @@ def compute_availability(
     if want_edge:
         best_at_target = pool["position"].map(edge_expectation[target_pick])
         df.loc[in_pool, "edge"] = (pool["vorp"] - best_at_target).to_numpy()
+        # Work order 2026-08-29c item 2: the SAME per-position E[max vorp available at
+        # target_pick] that `edge` itself already nets out, exposed as an attrs dict
+        # (precedent: compute_composite's own "replacement_level"/"disabled_composite_layers")
+        # rather than folded into `edge`'s own formula -- board_model reads this to
+        # discount a flex-eligible player against the BEST flex-eligible alternative
+        # (not just his own position) once his starting slot is filled, without this
+        # function's `edge` column, its fallback, or `n_sims` changing at all.
+        df.attrs["edge_expectation_at_target"] = dict(edge_expectation[target_pick])
 
     df["survival_probability"] = 0.0
     if method == "blend":
@@ -1107,7 +1213,17 @@ def _w15(roster: RosterState) -> Warning_ | None:
 def _w16(roster: RosterState, fork_miss_branch: bool) -> Warning_ | None:
     """`fork_miss_branch`: the TE1 fork player (config.draft_setup.te1_fork_player, if
     any) is gone and the owner still doesn't have a TE1 -- work order 2026-08-29 item 3
-    (R39): the wording must not assume a specific player."""
+    (R39): the wording must not assume a specific player.
+
+    Work order 2026-08-29c item 9 (pre-existing, reported by the previous session,
+    fixed here rather than deleted): the caller used to compute `fork_miss_branch` as
+    `not fork_player_available and roster.count("TE") > 0`, which required TE count > 0
+    at the exact moment this function ALSO requires TE count == 0 below -- mutually
+    exclusive on the same roster, so this warning could never fire; the timeline still
+    displayed it as armed. `evaluate_pick` now computes `fork_miss_branch` as
+    `bool(fork_player_name) and not fork_player_available` -- "a fork is actually
+    configured, and that named player is gone" -- with no TE-count clause at all,
+    leaving TE count == 0 as the ONE place that condition is checked (right here)."""
     if fork_miss_branch and roster.current_round >= 8 and roster.count("TE") == 0:
         return Warning_("W16", "TE1 fork player missed, no TE1 entering Rd 8 -- next tier is the plan.", "Medium")
     return None
@@ -1341,8 +1457,14 @@ def evaluate_pick(
     pick53_fork_state's own docstring. Callers that don't pass it (this function's
     old callers) get the fork disabled, matching "off by default for any other
     league."""
+    # Work order 2026-08-29c item 9: fixed, not deleted -- see _w16's own docstring
+    # for the exact dead-condition bug this replaces (the old expression required
+    # roster.count("TE") > 0 here while _w16 itself requires == 0, so it could never
+    # fire). `bool(fork_player_name)` is what makes this -- and therefore W16 -- go
+    # quiet when the setup screen's fork is blank or toggled off (work order item 5),
+    # with no TE-count condition duplicated here at all.
     warnings = evaluate_guardrails(
-        roster, fork_miss_branch=not fork_player_available and roster.count("TE") > 0, owner_drift=owner_drift
+        roster, fork_miss_branch=bool(fork_player_name) and not fork_player_available, owner_drift=owner_drift
     )
     last_row = None
     if roster.picks:

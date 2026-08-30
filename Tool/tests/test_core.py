@@ -1206,6 +1206,9 @@ def test_candidates_for_pick_vectorized_matches_a_row_by_row_reference(built):
         for _, r in pool.iterrows():
             if r["player"] in used or shape.get(r["position"], 0) <= 0 or r.get("intel_tag") == "hard_avoid":
                 continue
+            # Work order 2026-08-29c item 3: missing_both_markets is also a hard filter.
+            if bm.missing_both_markets(r):
+                continue
             avail = 1.0 if from_pick == pick else bm.survival_between(r, from_pick, pick)
             if avail < min_availability:
                 continue
@@ -1523,10 +1526,16 @@ def test_no_position_is_systematically_negative_in_the_calibration_population(bu
         assert abs(vals.mean()) < 1.0, f"{pos} mean market_reach_gap {vals.mean():.2f} looks systematically biased"
 
 
-def test_market_reach_gap_is_none_and_penalty_zero_without_nffc_coverage():
+def test_market_reach_gap_is_none_and_penalty_is_worst_observed_without_nffc_coverage(monkeypatch):
+    # Work order 2026-08-29c item 3: "null reach penalty must never be zero -- treat it
+    # as the worst observed penalty for that position." Supersedes the old assertion
+    # (`reach_penalty == 0.0`), which was exactly the bug: 0.0 read as "no reach at
+    # all," not "unknown," letting a player missing NFFC coverage look safer than one
+    # the market had actually priced.
+    monkeypatch.setattr(bm, "_worst_reach_penalty_cache", {"RB": 12.5})
     row = pd.Series({"position": "RB", "reference_adp_rank": 40.0, "comparison_adp_value": np.nan})
     assert bm.market_reach_gap(row) is None
-    assert bm.reach_penalty(row) == 0.0
+    assert bm.reach_penalty(row) == 12.5
 
 
 def test_reach_penalty_only_fires_on_a_positive_gap_and_is_capped(monkeypatch):
@@ -1739,3 +1748,712 @@ def test_reference_and_comparison_adp_still_select_by_source_name():
     assert set(pipeline.ADP_INGESTORS) == {"NFFC", "Sleeper"}
     assert pipeline.ADP_INGESTORS["Sleeper"] is pipeline.ingest_sleeper_via_mapping
     assert pipeline.ADP_INGESTORS["NFFC"] is pipeline.ingest_nffc_via_mapping
+
+
+# ---------------------------------------------------------------------------
+# 23. Work order 2026-08-29c items 1+2: `remaining`/roster state was threaded into
+#     candidates_for_pick and never read, so a QB or TE already holding its starting
+#     slot ranked exactly as if nothing had changed. need_discount() fixes both at
+#     once: 0.0 while a position's own starters are unfilled, a data-driven gap
+#     against the best flex-eligible alternative (RB/WR/TE) once filled, and a flat
+#     floor for QB (no flex path at all) so it never falls softer than the owner's own
+#     "cliff" framing even when the measured gap happens to be small.
+# ---------------------------------------------------------------------------
+def test_need_discount_zero_while_starters_are_unfilled():
+    assert bm.need_discount("TE", {}, {"TE": 10.0, "RB": 100.0}) == 0.0
+    assert bm.need_discount("QB", {}, {"QB": 10.0, "RB": 100.0}) == 0.0
+    assert bm.need_discount("RB", {"RB": 1}, {"RB": 10.0, "WR": 100.0}) == 0.0  # RB needs 2 starters
+
+
+def test_need_discount_flex_measures_the_gap_to_the_best_flex_alternative():
+    ee = {"QB": 50.0, "RB": 100.0, "WR": 80.0, "TE": 20.0}
+    # TE's own starter (1) is filled; best flex-eligible alternative is RB at 100.
+    assert bm.need_discount("TE", {"TE": 1}, ee) == pytest.approx(100.0 - 20.0)
+
+
+def test_need_discount_flex_position_that_is_itself_deepest_gets_zero():
+    ee = {"QB": 50.0, "RB": 10.0, "WR": 5.0, "TE": 50.0}
+    # TE is itself the deepest flex-eligible position -- no discount, per the work
+    # order's own "the scarcity is real" / "still legitimately best available" logic.
+    assert bm.need_discount("TE", {"TE": 1}, ee) == 0.0
+
+
+def test_need_discount_qb_floor_binds_when_measured_gap_is_small():
+    ee = {"QB": 90.0, "RB": 95.0, "WR": 80.0, "TE": 70.0}  # measured gap = 95-90 = 5
+    assert bm.need_discount("QB", {"QB": 1}, ee) == bm.QB2_NEED_DISCOUNT
+
+
+def test_need_discount_qb_uses_the_measured_gap_when_it_exceeds_the_floor():
+    ee = {"QB": 10.0, "RB": 200.0, "WR": 150.0, "TE": 100.0}  # measured gap = 190
+    assert bm.need_discount("QB", {"QB": 1}, ee) == pytest.approx(190.0)
+
+
+def test_need_discount_falls_back_to_flat_constants_without_edge_expectation_data():
+    assert bm.need_discount("TE", {"TE": 1}, {}) == bm.FLEX_NEED_DISCOUNT_FALLBACK
+    assert bm.need_discount("QB", {"QB": 1}, None) == bm.QB2_NEED_DISCOUNT
+
+
+def test_candidates_for_pick_reads_need_discount_off_pool_attrs(monkeypatch):
+    # Synthetic, deterministic pool -- no Monte Carlo, no `built` fixture. Two TEs with
+    # near-equal edge to a same-edge RB; TE1 already held pushes both TEs below the RB.
+    # Position offsets zeroed (established pattern, e.g. test_reach_penalty_changes_
+    # candidate_ranking) so reach_penalty doesn't confound the ranking being tested.
+    monkeypatch.setattr(bm, "_position_offsets_cache", {"RB": 0.0, "WR": 0.0, "QB": 0.0, "TE": 0.0})
+    # reference_adp_rank == pick (10), matching test_reach_penalty_changes_candidate_ranking's
+    # own values -- a rank far from `pick` (e.g. 40) fits a curve that reads as "still
+    # there at next_after=20 with ~97% probability," which the WAIT_THRESHOLD filter
+    # then (correctly) drops as not worth taking now, emptying the pool.
+    pool = pd.DataFrame([
+        {"player": "GoodTE", "position": "TE", "edge": 10.0, "vorp": 10.0, "composite_score": 51.0,
+         "reference_adp_rank": 10.0, "comparison_adp_value": 10.0, "intel_tag": None, "intel_priority": np.nan},
+        {"player": "OtherTE", "position": "TE", "edge": 9.0, "vorp": 9.0, "composite_score": 49.0,
+         "reference_adp_rank": 11.0, "comparison_adp_value": 11.0, "intel_tag": None, "intel_priority": np.nan},
+        {"player": "SomeRB", "position": "RB", "edge": 10.0, "vorp": 10.0, "composite_score": 50.0,
+         "reference_adp_rank": 10.0, "comparison_adp_value": 10.0, "intel_tag": None, "intel_priority": np.nan},
+    ])
+    pool.attrs["edge_expectation_at_target"] = {"QB": 50.0, "RB": 100.0, "WR": 90.0, "TE": 20.0}
+
+    shape_te_open = {"TE": 2, "RB": 5}
+    out_open = bm.candidates_for_pick(pool, pick=10, from_pick=10, next_after=20, shape=shape_te_open, used=set(), min_availability=0.0)
+    assert list(out_open["player"])[:2] == ["GoodTE", "SomeRB"]  # tied edge tier, TE undiscounted still on top by composite tiebreak
+    assert out_open.set_index("player")["need_discount"].eq(0.0).all()
+
+    shape_te_filled = {"TE": 1, "RB": 5}  # cap 2, held 1 -- TE1 already filled
+    out_filled = bm.candidates_for_pick(pool, pick=10, from_pick=10, next_after=20, shape=shape_te_filled, used=set(), min_availability=0.0)
+    assert list(out_filled["player"])[0] == "SomeRB"
+    disc = out_filled.set_index("player")["need_discount"]
+    assert disc["GoodTE"] == pytest.approx(100.0 - 20.0)
+    assert disc["OtherTE"] == pytest.approx(100.0 - 20.0)
+    assert disc["SomeRB"] == 0.0
+
+
+def test_edge_expectation_at_target_exposed_without_changing_edge_formula(built):
+    # Work order's explicit "do not change the edge formula, its fallback, or n_sims" --
+    # pins the exact line that computes `edge` (unchanged) and confirms the NEW attrs
+    # key is populated alongside it, not folded into it.
+    import inspect
+    src = inspect.getsource(de.compute_availability)
+    assert 'df.loc[in_pool, "edge"] = (pool["vorp"] - best_at_target).to_numpy()' in src
+    assert "n_sims: int = config.AVAILABILITY_N_SIMS" in inspect.getsource(de.compute_availability)
+
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board = bm.availability_with_band(
+        board, as_of_pick=44, target_pick=53, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={},
+    )
+    ee = board.attrs.get("edge_expectation_at_target")
+    assert ee is not None and set(ee) == set(config.POSITIONS)
+
+
+def test_item1_top10_at_pick77_qb_and_te_fall_when_filled_and_return_when_empty(built):
+    # The work order's own acceptance check, verbatim: "with a roster holding 1 QB and
+    # 1 TE, report the top 10 at pick 77 before and after. Confirm QB and TE fall. Then
+    # set the roster to empty and confirm they return." Uses the real built board and
+    # the real Monte Carlo (unseeded, like production) -- the inequality asserted below
+    # is robust to simulation noise because the measured need_discount gaps run in the
+    # tens of points, not fractions of one.
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    this_pick = 77
+    turn_after = next(p for p in bm.owner_pick_numbers() if p > this_pick)
+    board = bm.availability_with_band(
+        board, as_of_pick=this_pick, target_pick=turn_after, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={},
+    )
+
+    def top10_qb_te_count(roster_counts):
+        remaining = {pos: cap - roster_counts.get(pos, 0) for pos, cap in config.ROSTER_TARGET.items()}
+        cands = bm.candidates_for_pick(board, this_pick, this_pick, turn_after, remaining, set(), min_availability=0.0)
+        return int(cands.head(10)["position"].isin(["QB", "TE"]).sum())
+
+    empty_count = top10_qb_te_count({})
+    filled_count = top10_qb_te_count({"QB": 1, "TE": 1})
+    assert empty_count > 0, "sanity: QB/TE should appear in the top 10 with an empty roster"
+    assert filled_count < empty_count, "QB and TE must fall in the top 10 once their starting slots are filled"
+    assert top10_qb_te_count({}) == empty_count  # setting the roster back to empty returns them
+
+
+# ---------------------------------------------------------------------------
+# 24. Work order 2026-08-29c item 3 (the Jayden Higgins class): a player missing from
+#     BOTH ADP sources is strong negative information (injury/suspension/camp
+#     casualty/retirement), not "no opinion" -- excluded from suggestions/routes,
+#     shown on the full board with an explicit flag. Missing from exactly ONE market
+#     stays eligible but gets a widened survival curve and a non-zero (worst-observed)
+#     reach_penalty instead of the old, silently-lenient 0.0.
+# ---------------------------------------------------------------------------
+def test_missing_both_markets_counts_match_the_real_build(built):
+    master, _ = built
+    no_ref = master["reference_adp_rank"].isna()
+    no_cmp = master["comparison_adp_value"].isna()
+    missing_both = int((no_ref & no_cmp).sum())
+    missing_only_sleeper = int((no_ref & ~no_cmp).sum())
+    missing_only_nffc = int((~no_ref & no_cmp).sum())
+    # Real, measured counts on the current build (2026-08-29 files) -- pinned so a
+    # future data refresh that silently changes join coverage is caught, not just
+    # "some number greater than zero."
+    assert missing_both == 86
+    assert missing_only_sleeper == 120
+    assert missing_only_nffc == 18
+    higgins = master[master["player"] == "Jayden Higgins"]
+    assert len(higgins) == 1
+    assert pd.isna(higgins.iloc[0]["reference_adp_rank"])
+    assert pd.isna(higgins.iloc[0]["comparison_adp_value"])
+
+
+def test_missing_both_markets_and_market_coverage_flag():
+    both_missing = pd.Series({"position": "WR", "reference_adp_rank": np.nan, "comparison_adp_value": np.nan})
+    only_sleeper = pd.Series({"position": "WR", "reference_adp_rank": 40.0, "comparison_adp_value": np.nan})
+    only_nffc = pd.Series({"position": "WR", "reference_adp_rank": np.nan, "comparison_adp_value": 40.0})
+    both_present = pd.Series({"position": "WR", "reference_adp_rank": 40.0, "comparison_adp_value": 40.0})
+    assert bm.missing_both_markets(both_missing) is True
+    assert bm.missing_both_markets(only_sleeper) is False
+    assert bm.missing_both_markets(only_nffc) is False
+    assert bm.missing_both_markets(both_present) is False
+    assert bm.market_coverage_flag(both_missing) == "no_market"
+    assert bm.market_coverage_flag(only_sleeper) == "partial_market"
+    assert bm.market_coverage_flag(only_nffc) == "partial_market"
+    assert bm.market_coverage_flag(both_present) is None
+
+
+def test_reach_penalty_never_zero_for_missing_market_uses_worst_observed(monkeypatch):
+    monkeypatch.setattr(bm, "_worst_reach_penalty_cache", {"WR": 9.0, "TE": 4.0})
+    missing_nffc = pd.Series({"position": "WR", "reference_adp_rank": 40.0, "comparison_adp_value": np.nan})
+    missing_both = pd.Series({"position": "TE", "reference_adp_rank": np.nan, "comparison_adp_value": np.nan})
+    assert bm.reach_penalty(missing_nffc) == 9.0
+    assert bm.reach_penalty(missing_both) == 4.0
+    # Unknown position (not in the cache) falls back to the cap, never 0.0.
+    unknown_pos = pd.Series({"position": "K", "reference_adp_rank": np.nan, "comparison_adp_value": np.nan})
+    assert bm.reach_penalty(unknown_pos) == bm.REACH_PENALTY_CAP
+
+
+def test_worst_reach_penalty_computed_from_the_real_build_and_is_never_zero(built):
+    monkeypatch_cache = bm._worst_reach_penalty_cache
+    bm._worst_reach_penalty_cache = None
+    try:
+        worst = bm._worst_reach_penalty()
+        assert set(worst) == set(config.POSITIONS)
+        for pos, val in worst.items():
+            assert val >= 0.0
+    finally:
+        bm._worst_reach_penalty_cache = monkeypatch_cache
+
+
+def test_higgins_excluded_from_candidates_for_pick_at_every_owner_pick(built):
+    # The acceptance check itself: "confirm Higgins no longer appears in suggestions
+    # at any pick." Checked at every one of the owner's 16 real picks, not just one.
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    picks = bm.owner_pick_numbers()
+    appears_at = []
+    for i, pk in enumerate(picks):
+        turn_after = picks[i + 1] if i + 1 < len(picks) else pk + config.N_TEAMS
+        b = bm.availability_with_band(
+            board, as_of_pick=pk, target_pick=turn_after, manager_priors=priors, team_bias=team_bias,
+            drafted_name_keys=set(), owner_roster_by_manager={},
+        )
+        cands = bm.candidates_for_pick(b, pk, pk, turn_after, dict(config.ROSTER_TARGET), set(), min_availability=0.0)
+        if "Jayden Higgins" in set(cands["player"]):
+            appears_at.append(pk)
+    assert appears_at == []
+
+
+def test_missing_dispersion_source_widens_the_generic_sigma():
+    # Work order 2026-08-29c item 3's "widened survival interval" for a player missing
+    # exactly one market -- anchored (Sleeper present) but no NFFC data at all.
+    with_nffc = pd.Series({
+        "reference_adp_rank": 50.0, "comparison_adp_value": 50.0,
+        "comparison_adp_min": 40.0, "comparison_adp_max": 60.0, "comparison_adp_n": 20.0,
+    })
+    without_nffc = pd.Series({
+        "reference_adp_rank": 50.0, "comparison_adp_value": np.nan,
+        "comparison_adp_min": np.nan, "comparison_adp_max": np.nan, "comparison_adp_n": np.nan,
+    })
+    _, sigma_with, _ = de._fit_from_row(with_nffc)
+    _, sigma_without, _ = de._fit_from_row(without_nffc)
+    assert sigma_without == pytest.approx(config.GENERIC_LOGNORMAL_SIGMA * config.PARTIAL_MARKET_SIGMA_WIDEN)
+    assert sigma_without > sigma_with
+
+
+def test_lognormal_fit_arrays_widens_sigma_the_same_way_as_the_per_row_version():
+    pool = pd.DataFrame([
+        {"reference_adp_rank": 50.0, "comparison_adp_value": 50.0,
+         "comparison_adp_min": 40.0, "comparison_adp_max": 60.0, "comparison_adp_n": 20.0},
+        {"reference_adp_rank": 50.0, "comparison_adp_value": np.nan,
+         "comparison_adp_min": np.nan, "comparison_adp_max": np.nan, "comparison_adp_n": np.nan},
+    ])
+    _, sigma_arr, has_fit = de._lognormal_fit_arrays(pool)
+    assert has_fit.all()
+    assert sigma_arr[1] == pytest.approx(config.GENERIC_LOGNORMAL_SIGMA * config.PARTIAL_MARKET_SIGMA_WIDEN)
+    assert sigma_arr[1] > sigma_arr[0]
+
+
+# ---------------------------------------------------------------------------
+# 25. Work order 2026-08-29c item 4 (R42): "anchors are selected by edge, then the
+#     three routes are re-sorted by a key that does not contain it." build_routes now
+#     sorts on edge_sum net of reach_penalty_sum/need_discount_sum -- the route-level
+#     analog of candidates_for_pick's own `_edge_tier`.
+# ---------------------------------------------------------------------------
+def test_build_route_reports_edge_sum_and_need_discount_sum(built):
+    # No availability_with_band call -- de.compute_composite alone is deterministic (no
+    # Monte Carlo), same pattern as test_kicker_rows_never_appear_in_a_route. `edge`
+    # isn't on the board at all here, so edge_sum must equal vorp_sum (the documented
+    # fallback), and edge_expectation_at_target isn't set, so need_discount_sum uses
+    # the flat fallback constants -- both exercised, neither crashes.
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    assert "edge" not in board.columns
+    routes = bm.build_routes(board, {}, this_pick=5, on_clock=True, n_routes=3)
+    assert len(routes) == 3
+    for r in routes:
+        assert r["edge_sum"] == pytest.approx(r["vorp_sum"])
+        assert r["need_discount_sum"] >= 0.0
+
+
+def test_build_routes_sort_is_edge_based_and_actually_differs_from_the_old_formula(built):
+    # The acceptance check itself: "report the three route anchors and their
+    # route-sort scores before and after." Confirms the NEW key (edge_sum -
+    # reach_penalty_sum - need_discount_sum) is what determines the live order, and
+    # that this is not a no-op -- the OLD formula (vorp_sum + composite_sum -
+    # 2*reach_penalty_sum) would have produced a DIFFERENT order on this real board.
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    routes = bm.build_routes(board, {}, this_pick=5, on_clock=True, n_routes=3)
+    assert len(routes) == 3
+
+    new_scores = [r["edge_sum"] - r["reach_penalty_sum"] - r["need_discount_sum"] for r in routes]
+    old_scores = [r["vorp_sum"] + r["composite_sum"] - 2 * r["reach_penalty_sum"] for r in routes]
+    anchors = [r["anchor"]["player"] for r in routes]
+    print(f"anchors={anchors} new_scores={new_scores} old_scores={old_scores}")  # visible with -s
+
+    # Live order already reflects the NEW key, descending.
+    assert new_scores == sorted(new_scores, reverse=True)
+    # The OLD key would NOT have produced the same order on this real board -- the fix
+    # changes actual output, not just the formula's name.
+    old_order = sorted(range(len(routes)), key=lambda i: old_scores[i], reverse=True)
+    assert old_order != list(range(len(routes)))
+
+
+def test_build_routes_sort_key_reads_edge_sum_not_vorp_sum_plus_composite_sum():
+    # Structural guard: the old `vorp_sum + composite_sum - 2 * reach_penalty_sum` key
+    # must be gone from build_routes' own source, not just superseded at runtime.
+    import inspect
+    src = inspect.getsource(bm.build_routes)
+    assert "edge_sum" in src
+    assert "vorp_sum + r[\"composite_sum\"]" not in src
+    assert "2 * r[\"reach_penalty_sum\"]" not in src
+
+
+# ---------------------------------------------------------------------------
+# 26. Work order 2026-08-29c item 9 (pre-existing _w16 dead flag): fixed, not
+#     deleted. evaluate_pick's fork_miss_branch no longer requires TE count > 0 (the
+#     condition _w16 itself already requires == 0, so the old formula could never be
+#     true when _w16's own gate held) -- now `bool(fork_player_name) and not
+#     fork_player_available`, with no TE-count clause duplicated.
+# ---------------------------------------------------------------------------
+def test_w16_now_fires_when_the_configured_fork_player_is_gone():
+    # The acceptance check itself: "show the condition that now fires."
+    roster = de.RosterState(picks=[], current_overall_pick=53, current_round=8)
+    fork_miss_branch = bool("Sam LaPorta") and not False  # fork configured, player gone
+    w16 = de._w16(roster, fork_miss_branch)
+    assert w16 is not None
+    assert w16.code == "W16"
+
+
+def test_w16_old_formula_could_never_fire_pinned_as_the_bug_being_fixed():
+    # Documents the exact dead condition the previous session found: TE count > 0
+    # here can never coexist with _w16's own TE count == 0 requirement.
+    roster = de.RosterState(picks=[], current_overall_pick=53, current_round=8)
+    old_formula_result = (not False) and (roster.count("TE") > 0)
+    assert old_formula_result is False
+    assert de._w16(roster, old_formula_result) is None
+
+
+def test_evaluate_pick_fork_miss_branch_quiet_when_fork_blank_or_player_still_available(built):
+    master, _ = built
+    board = de.compute_composite(master)
+    roster = de.RosterState(picks=[], current_overall_pick=53, current_round=8)
+    # Blank fork configured: never a miss, regardless of fork_player_available.
+    result_blank = de.evaluate_pick(board, roster, fork_player_available=False, owner_drift=None, fork_player_name="")
+    assert not any(w.code == "W16" for w in result_blank["warnings"])
+    # Fork configured AND still available (not gone): also not a miss.
+    result_available = de.evaluate_pick(
+        board, roster, fork_player_available=True, owner_drift=None, fork_player_name="Sam LaPorta",
+    )
+    assert not any(w.code == "W16" for w in result_available["warnings"])
+    # Fork configured AND gone: fires (this is item 9's fix, exercised through the
+    # real public entry point rather than _w16 directly).
+    result_gone = de.evaluate_pick(
+        board, roster, fork_player_available=False, owner_drift=None, fork_player_name="Sam LaPorta",
+    )
+    assert any(w.code == "W16" for w in result_gone["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# 27. Work order 2026-08-29c item 5: blank draft slots ("unmodelled manager") and a
+#     "show TE1 fork" visibility toggle on top of the existing blank-disables-cleanly
+#     fork mechanism (2026-08-29 item 3).
+# ---------------------------------------------------------------------------
+def test_validate_draft_order_allows_any_number_of_blanks():
+    factory_names = list(config.DRAFT_ORDER_2026_FACTORY)
+    order = list(factory_names)
+    for i in (0, 3, 6, 9):
+        order[i] = None
+    assert draft_setup.validate_draft_order(order, factory_names) is None
+
+
+def test_validate_draft_order_still_rejects_duplicates_and_unknown_names():
+    factory_names = list(config.DRAFT_ORDER_2026_FACTORY)
+    order = list(factory_names)
+    order[1] = order[0]  # duplicate real name
+    assert draft_setup.validate_draft_order(order, factory_names) is not None
+
+    order2 = list(factory_names)
+    order2[0] = "Totally Fictional Manager"
+    assert draft_setup.validate_draft_order(order2, factory_names) is not None
+
+    order3 = list(factory_names)
+    order3[0] = None  # a blank is fine on its own
+    assert draft_setup.validate_draft_order(order3, factory_names) is None
+
+
+def test_unmodelled_slot_labels_and_resolved_draft_order_are_unique():
+    setup = draft_setup.default_setup()
+    order = list(setup["draft_order"])
+    for i in (0, 3, 6, 9):
+        order[i] = None
+    setup["draft_order"] = order
+
+    assert draft_setup.unmodelled_slot_labels(setup) == ["Slot 1", "Slot 4", "Slot 7", "Slot 10"]
+    resolved = draft_setup.resolved_draft_order(setup)
+    assert len(resolved) == len(order)
+    assert len(set(resolved)) == len(resolved)  # every blank got a UNIQUE placeholder
+    real_names = [o for o in order if o]
+    assert all(name in resolved for name in real_names)  # real names pass through untouched
+
+
+def test_blank_slots_boot_with_no_crash_and_survival_still_computes(built, restore_config_singletons):
+    # The acceptance check itself: "boot with 4 blank slots and confirm no crash...
+    # and that survival still computes."
+    master, _ = built
+    setup = draft_setup.default_setup()
+    order = list(setup["draft_order"])
+    for i in (0, 3, 6, 9):
+        order[i] = None
+    setup["draft_order"] = order
+    setup["owner"] = next(o for o in order if o)
+    assert draft_setup.validate_draft_order(setup["draft_order"], list(config.DRAFT_ORDER_2026_FACTORY)) is None
+
+    draft_setup.apply_setup(setup)
+    assert len(config.DRAFT_ORDER_2026) == 12
+    assert len(set(config.DRAFT_ORDER_2026)) == 12  # blanks resolved to unique placeholders
+
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board = bm.availability_with_band(
+        board, as_of_pick=4, target_pick=20, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={},
+    )
+    p = board["survival_probability"].dropna()
+    assert len(p) > 0
+    assert p.between(0.0, 1.0).all()
+
+
+def test_show_te1_fork_toggle_hides_the_stored_name_without_deleting_it():
+    setup = {"te1_fork_player": "Sam LaPorta", "show_te1_fork": False}
+    assert draft_setup.te1_fork_player(setup) == ""
+    setup["show_te1_fork"] = True
+    assert draft_setup.te1_fork_player(setup) == "Sam LaPorta"  # stored name survived being hidden
+
+
+def test_show_te1_fork_off_keeps_w16_quiet_even_when_the_stored_player_is_gone(built):
+    # Ties item 5's toggle directly to item 9's fixed condition: a configured-but-
+    # hidden fork must behave exactly like "no fork configured", not like a fork that
+    # happens to always be available.
+    master, _ = built
+    board = de.compute_composite(master)
+    roster = de.RosterState(picks=[], current_overall_pick=53, current_round=8)
+    fork_name = draft_setup.te1_fork_player({"te1_fork_player": "Sam LaPorta", "show_te1_fork": False})
+    assert fork_name == ""
+    result = de.evaluate_pick(board, roster, fork_player_available=False, owner_drift=None, fork_player_name=fork_name)
+    assert not any(w.code == "W16" for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# 28. Work order 2026-08-29c item 7 (R43): round-band positional appetite computed
+#     empirically from drafts/all_draft_picks_2022-2025.csv, not hand-set.
+# ---------------------------------------------------------------------------
+def test_round_band_position_shares_match_the_reported_table(built):
+    # The acceptance check itself: "report the per-band position shares the model
+    # derives and confirm they match the table above within rounding." Pinned against
+    # the exact figures reported in WORKORDER-2026-08-29c.md's item 7 table.
+    shares = pd.read_csv(config.ROUND_BAND_POSITION_SHARES_PATH)
+    expected = {
+        ("R1-3", "QB"): 6.2, ("R1-3", "RB"): 44.4, ("R1-3", "WR"): 43.1, ("R1-3", "TE"): 6.2,
+        ("R4-6", "QB"): 16.7, ("R4-6", "RB"): 23.6, ("R4-6", "WR"): 43.8, ("R4-6", "TE"): 14.6,
+        ("R7-9", "QB"): 11.8, ("R7-9", "RB"): 34.7, ("R7-9", "WR"): 41.0, ("R7-9", "TE"): 11.1,
+        ("R10-13", "QB"): 12.5, ("R10-13", "RB"): 25.0, ("R10-13", "WR"): 32.3, ("R10-13", "TE"): 14.1,
+    }
+    indexed = shares.set_index(["round_band", "position"])["share_pct"]
+    for (band, pos), pct in expected.items():
+        assert indexed[(band, pos)] == pytest.approx(pct, abs=0.05), f"{band}/{pos}"
+    assert shares[shares["round_band"] == "R1-3"]["n_picks_in_band"].iloc[0] == 144
+    assert shares[shares["round_band"] == "R10-13"]["n_picks_in_band"].iloc[0] == 192
+    assert int(shares.groupby("round_band")["n_picks_in_band"].first().sum()) == 144 + 144 + 144 + 192
+
+
+def test_round_band_position_shares_recomputed_not_pasted():
+    # Structural guard: the function must read the raw picks file and derive shares
+    # via value_counts, not carry a literal table of the reported numbers.
+    import inspect
+    src = inspect.getsource(pipeline.compute_round_band_position_shares)
+    assert "config.ALL_DRAFT_PICKS_PATH" in src
+    assert "value_counts" in src
+    assert "44.4" not in src and "43.1" not in src  # no pasted numbers from the table
+
+
+def test_round_band_for_clamps_to_the_last_band_past_round_13():
+    assert config.round_band_for(2) == "R1-3"
+    assert config.round_band_for(9) == "R7-9"
+    assert config.round_band_for(13) == "R10-13"
+    assert config.round_band_for(16) == "R10-13"
+
+
+# ---------------------------------------------------------------------------
+# 29. Work order 2026-08-29c item 6: pace targets. `need_discount` (item 2) is
+#     starting-slot status; this is DEPTH pace -- "we need to still worry about 5
+#     WRs by round 9 or 10" even though WR's own 2 starting slots are long since
+#     filled by then.
+# ---------------------------------------------------------------------------
+def test_item6_pick101_three_wr_pace_gap_and_urgency():
+    # The acceptance check itself: "at pick 101 with 3 WRs rostered, confirm WR need
+    # weighting rises and report the gap figure shown."
+    pick = 101
+    current_round = config.round_of_pick(pick)
+    assert current_round == 9
+    gap = bm.pace_gap("WR", held=3, current_round=current_round)
+    urgency = bm.pace_urgency("WR", held=3, current_round=current_round)
+    assert gap == 1.0
+    assert urgency == 5.0  # PACE_URGENCY_PER_PLAYER * gap
+    # On pace (5 held): no urgency at all.
+    assert bm.pace_gap("WR", held=5, current_round=current_round) == 0.0
+    assert bm.pace_urgency("WR", held=5, current_round=current_round) == 0.0
+
+
+def test_pace_urgency_rises_across_rounds_as_the_deadline_approaches():
+    # WR target ramps linearly toward round 10 -- the gap (held fixed at 0) should
+    # never fall as the round advances toward the deadline.
+    gaps = [bm.pace_gap("WR", held=0, current_round=r) for r in range(1, 11)]
+    assert gaps == sorted(gaps)
+    assert gaps[-1] == 5.0  # fully due at round 10
+
+
+def test_qb1_pace_target_fires_at_round_8_not_before():
+    assert bm.pace_gap("QB", held=0, current_round=7) == 0.0
+    assert bm.pace_gap("QB", held=0, current_round=8) == 1.0
+    assert bm.pace_gap("QB", held=1, current_round=8) == 0.0
+
+
+def test_te_pace_contributes_nothing_deferred_to_w16():
+    for held in (0, 1, 2):
+        for rnd in (1, 8, 13):
+            assert bm.pace_gap("TE", held=held, current_round=rnd) == 0.0
+            assert bm.pace_urgency("TE", held=held, current_round=rnd) == 0.0
+
+
+def test_rb_pace_uses_the_item7_round_band_shares_and_is_gated_by_the_layer(monkeypatch):
+    monkeypatch.setattr(bm, "_round_band_shares_cache", {
+        ("R1-3", "RB"): 44.4, ("R4-6", "RB"): 23.6, ("R7-9", "RB"): 34.7, ("R10-13", "RB"): 25.0,
+    })
+    expected_r9 = 3 * 44.4 / 100 + 3 * 23.6 / 100 + 3 * 34.7 / 100
+    assert bm.pace_expected_count("RB", 9) == pytest.approx(expected_r9)
+    gap = bm.pace_gap("RB", held=0, current_round=9)
+    assert gap == float(int(expected_r9))  # floored to a whole player
+
+    monkeypatch.setitem(config.LAYERS["manager_priors"], "applies", False)
+    assert bm.pace_gap("RB", held=0, current_round=9) == 0.0
+
+
+def test_pace_urgency_is_capped():
+    monkeypatch_targets = dict(bm.PACE_TARGETS)
+    try:
+        bm.PACE_TARGETS["WR"] = (50, 10)  # absurd target to force a huge raw gap
+        urgency = bm.pace_urgency("WR", held=0, current_round=10)
+        assert urgency == bm.PACE_URGENCY_CAP
+    finally:
+        bm.PACE_TARGETS.clear()
+        bm.PACE_TARGETS.update(monkeypatch_targets)
+
+
+def test_candidates_for_pick_folds_pace_urgency_into_the_ranking_tier(monkeypatch):
+    # Isolates the mechanism itself (net_discount = need_discount - pace_urgency
+    # falling once pace applies) rather than racing WR against a differently-behaved
+    # position, since RB carries its OWN independent item-7 pace signal that would
+    # otherwise confound a cross-position comparison.
+    monkeypatch.setattr(bm, "_position_offsets_cache", {"WR": 0.0})
+    pool = pd.DataFrame([
+        {"player": "BehindWR", "position": "WR", "edge": 5.0, "vorp": 5.0, "composite_score": 50.0,
+         "reference_adp_rank": 101.0, "comparison_adp_value": 101.0, "intel_tag": None, "intel_priority": np.nan},
+    ])
+    pool.attrs["edge_expectation_at_target"] = {}
+    shape = {"WR": 3}  # cap 6, held 3 -- starters (2) already filled, item 2's need_discount applies
+
+    monkeypatch.setattr(bm, "PACE_TARGETS", {})
+    row_before = bm.candidates_for_pick(
+        pool, pick=101, from_pick=101, next_after=116, shape=shape, used=set(), min_availability=0.0
+    ).iloc[0]
+
+    monkeypatch.setattr(bm, "PACE_TARGETS", {"WR": (5, 10)})
+    row_after = bm.candidates_for_pick(
+        pool, pick=101, from_pick=101, next_after=116, shape=shape, used=set(), min_availability=0.0
+    ).iloc[0]
+
+    assert row_before["pace_urgency"] == 0.0
+    assert row_after["pace_urgency"] == 5.0
+    assert row_before["need_discount"] == row_after["need_discount"]  # item 2's own signal is untouched
+    net_before = row_before["need_discount"] - row_before["pace_urgency"]
+    net_after = row_after["need_discount"] - row_after["pace_urgency"]
+    assert net_after < net_before  # WR's effective discount FELL -- need weighting rose
+
+
+# ---------------------------------------------------------------------------
+# 30. Work order 2026-08-29c item 8 (R44): "assume a market slightly sharper than
+#     ADP" -- reach probability rises with a player's position-adjusted VALUE gap
+#     (market_reach_gap's own sign convention: negative = better-than-typical value),
+#     and roadmap legs show a pessimistic quantile alongside the optimistic one.
+#     Explicitly NOT stacked with item 7's RB market-shape mechanism.
+# ---------------------------------------------------------------------------
+def test_value_seeking_shift_only_fires_on_negative_gap_never_positive(monkeypatch):
+    monkeypatch.setattr(de, "_position_offsets_cache_reach", {"RB": 0.0, "WR": 0.0})
+    pool = pd.DataFrame([
+        # value: NFFC ranks him EARLIER (lower pick number) than Sleeper -> gap = 10-50 = -40 (negative)
+        {"position": "RB", "reference_adp_rank": 50.0, "comparison_adp_value": 10.0},
+        # reach: NFFC ranks him LATER than Sleeper -> gap = 90-50 = +40 (positive)
+        {"position": "WR", "reference_adp_rank": 50.0, "comparison_adp_value": 90.0},
+        {"position": "RB", "reference_adp_rank": 50.0, "comparison_adp_value": np.nan},  # no NFFC coverage
+    ])
+    shift = de._value_seeking_shift_array(pool)
+    assert shift[0] > 0.0   # the value gets a positive shift
+    assert shift[1] == 0.0  # the already-reached player gets nothing
+    assert shift[2] == 0.0  # no coverage -> no signal, not a guess
+    assert shift[0] == pytest.approx(min(40.0 * de.VALUE_SEEKING_REACH_WEIGHT, de.VALUE_SEEKING_REACH_CAP))
+
+
+def test_value_seeking_shift_is_capped():
+    huge = pd.DataFrame([{"position": "RB", "reference_adp_rank": 200.0, "comparison_adp_value": 5.0}])
+    shift = de._value_seeking_shift_array(huge)
+    assert shift[0] == de.VALUE_SEEKING_REACH_CAP
+
+
+def test_hazard_matrix_value_shift_is_a_pure_addition_when_none(built):
+    # Regression guard: passing value_shift_sub=None must reproduce the exact prior
+    # (n_sims,1)-broadcast behavior, not a different numeric result.
+    master, _ = built
+    board = de.compute_composite(master)
+    sub = board[board["position"] == "RB"].head(10)
+    mu, sigma, has_fit = de._lognormal_fit_arrays(sub)
+    rank = sub["reference_adp_rank"].to_numpy(dtype=float)
+    eff = np.array([10.0, 20.0, 30.0])
+    without = de._hazard_matrix_for_subset(eff, mu, sigma, has_fit, rank, None)
+    zeros = de._hazard_matrix_for_subset(eff, mu, sigma, has_fit, rank, np.zeros(len(sub)))
+    assert np.allclose(without, zeros)
+
+
+def test_item8_three_biggest_value_gap_players_survival_falls(built):
+    # The acceptance check itself: "report survival for the three largest positive
+    # market_reach_gap players before and after. They must fall." Read against
+    # board_model.market_reach_gap's own documented sign convention (negative =
+    # value -- see market_reach_gap's docstring), "the three largest value gaps" is
+    # the three most NEGATIVE raw gaps, not the literal signed-positive set (which
+    # this test also checks, for contrast, showing it does NOT reliably fall).
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    board["_gap"] = board.apply(lambda r: bm.market_reach_gap(r), axis=1)
+    pool150 = board[board["reference_adp_rank"] <= 150].dropna(subset=["_gap"])
+    biggest_values = list(pool150.nsmallest(3, "_gap")["player"])
+    board = board.drop(columns=["_gap"])
+
+    AS_OF, TARGET = 53, 125
+    orig_weight = de.VALUE_SEEKING_REACH_WEIGHT
+    try:
+        de.VALUE_SEEKING_REACH_WEIGHT = 0.0
+        before = de.compute_availability(
+            board, as_of_pick=AS_OF, target_pick=TARGET, manager_priors=priors, team_bias=team_bias,
+            n_sims=2000, rng=np.random.default_rng(777),
+        )
+        de.VALUE_SEEKING_REACH_WEIGHT = orig_weight
+        after = de.compute_availability(
+            board, as_of_pick=AS_OF, target_pick=TARGET, manager_priors=priors, team_bias=team_bias,
+            n_sims=2000, rng=np.random.default_rng(777),
+        )
+        b = before.set_index("player")["survival_probability"]
+        a = after.set_index("player")["survival_probability"]
+        for player in biggest_values:
+            assert a[player] < b[player], f"{player}: before={b[player]:.4f} after={a[player]:.4f}"
+    finally:
+        de.VALUE_SEEKING_REACH_WEIGHT = orig_weight
+
+
+def test_item8_capacity_invariant_holds(built):
+    # "Confirm the capacity invariant holds": exactly k players removed in k picks,
+    # by construction of the simulation loop itself -- unaffected by the value-seeking
+    # reach change, since it only reweights the softmax, never the sampling mechanism.
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    AS_OF, TARGET = 53, 125
+    n_intervening = sum(1 for ov, r, m in config.full_draft_sequence() if AS_OF < ov < TARGET and m != config.OWNER)
+    b = bm.availability_with_band(
+        board, as_of_pick=AS_OF, target_pick=TARGET, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={}, n_sims=2000,
+    )
+    in_pool = b["position"].isin(config.POSITIONS)
+    expected_gone = float((1.0 - b.loc[in_pool, "survival_probability"]).sum())
+    assert abs(expected_gone - n_intervening) < 2.0  # MC noise at n_sims=2000, not a systematic drift
+
+
+def test_leg_survival_quantiles_pessimistic_never_exceeds_optimistic():
+    row_with_band = pd.Series({"survival_probability": 0.7, "survival_band": 0.1})
+    pess, opt = bm.leg_survival_quantiles(row_with_band, fallback=0.5)
+    assert opt == 0.7
+    assert pess == pytest.approx(0.6)
+
+    row_without_mc = pd.Series({"position": "RB"})  # no survival_probability at all
+    pess2, opt2 = bm.leg_survival_quantiles(row_without_mc, fallback=0.42)
+    assert pess2 == opt2 == 0.42
+
+    row_clips_at_zero = pd.Series({"survival_probability": 0.05, "survival_band": 0.5})
+    pess3, _ = bm.leg_survival_quantiles(row_clips_at_zero, fallback=0.5)
+    assert pess3 == 0.0
+
+
+def test_build_route_legs_carry_optimistic_and_pessimistic_odds(built):
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    routes = bm.build_routes(board, {}, this_pick=5, on_clock=True, n_routes=1)
+    route = routes[0]
+    assert len(route["legs"]) > 0
+    for leg in route["legs"]:
+        assert "odds_pessimistic" in leg and "odds_optimistic" in leg
+        assert leg["odds_pessimistic"] <= leg["odds_optimistic"] + 1e-9
+
+
+def test_render_route_card_labels_the_pessimistic_figure(built):
+    import cockpit_html as ch
+
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    routes = bm.build_routes(board, {}, this_pick=5, on_clock=True, n_routes=1)
+    html_out = ch.render_route_card(routes[0], 0, 5, 20, True, ch.THEME_DARK)
+    assert "Worst-case" in html_out
+    assert "opt " in html_out

@@ -61,6 +61,9 @@ JOIN_REPORT_PATH = DATA_DERIVED / "join_report.txt"
 PLAYER_MASTER_PATH = DATA_DERIVED / "player_master.csv"
 MANAGER_PRIORS_PATH = DATA_DERIVED / "manager_priors.csv"
 TEAM_BIAS_PATH = DATA_DERIVED / "team_bias.csv"
+# Work order 2026-08-29c item 7 (R43): empirically derived, not hand-set -- see
+# build/pipeline.py's compute_round_band_position_shares.
+ROUND_BAND_POSITION_SHARES_PATH = DATA_DERIVED / "round_band_position_shares.csv"
 ADP_SOURCE_OFFSETS_PATH = DATA_DERIVED / "adp_source_offsets.csv"
 PLAYER_INTEL_PATH = DATA_DERIVED / "player_intel.csv"
 REFERENCE_ADP_PATH = DATA_EXTERNAL / "reference_adp.csv"
@@ -143,6 +146,23 @@ DRAFT_ORDER_2026 = [
 OWNER = "Nathan"
 N_TEAMS = len(DRAFT_ORDER_2026)
 N_ROUNDS = 16
+
+# Work order 2026-08-29c item 7 (R43): the round bands compute_round_band_position_
+# shares (build/pipeline.py) aggregates over, and item 6's pace targets look up by
+# round. Stops at 13 -- rounds 14-16 are the kicker/deep-bench tail (spec R22, no
+# props coverage), not a skill-position appetite question.
+ROUND_BANDS = [("R1-3", 1, 3), ("R4-6", 4, 6), ("R7-9", 7, 9), ("R10-13", 10, 13)]
+
+
+def round_band_for(round_num: int) -> str | None:
+    """Which ROUND_BANDS label `round_num` falls in -- clamped to the last band for
+    anything past it (14-16), None only if somehow before round 1."""
+    if round_num < 1:
+        return None
+    for label, lo, hi in ROUND_BANDS:
+        if lo <= round_num <= hi:
+            return label
+    return ROUND_BANDS[-1][0]
 
 # Immutable snapshots for the setup screen's "reset to factory" (app/draft_setup.py) --
 # DRAFT_ORDER_2026/OWNER/ROSTER_TARGET below are meant to be mutated in place at
@@ -281,6 +301,13 @@ ADP_MIN_N = 15  # NFFC rows below this sample count are shown but excluded from 
 # ---------------------------------------------------------------------------
 GENERIC_LOGNORMAL_SIGMA = 0.35  # fallback dispersion when adp_value exists but min/max/n don't
 GENERIC_ADP_SPREAD_PICKS = 24  # fallback normal-curve spread when there's no ADP mean pick, just a rank
+# Work order 2026-08-29c item 3: a player anchored by one market (usually Sleeper) but
+# with literally NO data from the dispersion source (usually NFFC -- SURVIVAL_
+# DISPERSION_SOURCE) is less certain than one whose OWN anchor source's range is simply
+# thin (GENERIC_LOGNORMAL_SIGMA already covers that case honestly). "Missing from one
+# market" gets a wider fallback curve than "fully covered" -- not fit to the backtest,
+# a documented modeling choice bounded the same way REACH_PENALTY_WEIGHT/CAP are.
+PARTIAL_MARKET_SIGMA_WIDEN = 1.5
 # Work order 2026-08-24b item 3 (R38): "cost is negligible" (spec 12.3's original framing)
 # turned out wrong once actually measured against the real 433-row board -- 2000 sims
 # cost ~5.5s per render on its own, the single biggest piece of the reported "15 of 90

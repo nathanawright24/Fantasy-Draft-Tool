@@ -1,17 +1,17 @@
 {
   "draft_order": [
-    "Dylan",
+    null,
     "Nathan",
-    "Tyler",
-    "Nick",
-    "Cailen",
-    "Asa",
-    "Greg",
-    "Ryan",
-    "Jayden",
-    "Colin",
-    "Joseph",
-    "Kaiden"
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
   ],
   "owner": "Nathan",
   "roster_target": {
@@ -34,5 +34,6 @@
     "player_intel": true
   },
   "te1_fork_player": "Sam LaPorta",
-  "sleeper_draft_id": "1399487519753531392"
+  "show_te1_fork": false,
+  "sleeper_draft_id": "1399509453258100736"
 }
