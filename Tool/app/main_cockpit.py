@@ -45,7 +45,11 @@ POLL_SECONDS = 6
 def load_master() -> pd.DataFrame:
     """player_master.csv with the kicker slide already applied, so every consumer of
     this frame is kicker agnostic and nobody has to remember to call it."""
-    raw = pd.read_csv(config.PLAYER_MASTER_PATH)
+    # dtype pin: see app/main.py's load_master -- `intel_windows` reads back as
+    # float64 (breaking int() parsing downstream) whenever no player currently spans
+    # more than one pick window, since the column then has no comma to force pandas
+    # to keep it as text.
+    raw = pd.read_csv(config.PLAYER_MASTER_PATH, dtype={"intel_windows": str})
     return bm.apply_kicker_slide(raw)
 
 
@@ -124,26 +128,32 @@ def live_status(draft_id: str | None) -> tuple[str, str]:
 def compute_board(
     master: pd.DataFrame, state: dict, priors: pd.DataFrame, team_bias: pd.DataFrame,
     as_of_pick: int, target_pick: int, wait_pick: int | None,
+    board_assumption: str = "adp_order",
 ) -> pd.DataFrame:
-    """de.compute_composite + bm.availability_with_band, cached (work order 2026-08-24b
-    item 3 / R38) on (frozenset(drafted_name_keys), as_of_pick, target_pick, wait_pick)
-    -- measured at ~5.5s per call (2000-sim montecarlo, before this work order's other
-    fixes) on the real 433-row board, the dominant cost of a render by a wide margin.
-    A rerun where none of those four have changed -- every idle 6-second poll that
-    finds no new pick, or any other widget interaction that triggers a full rerun
-    without one -- is the common case, and now costs nothing instead of paying for the
-    simulation again. Cache lives in st.session_state (board_model.py itself must stay
-    UI-framework-free, per this repo's own grep check), and is cleared on every setup
-    save (render_setup_screen's submit handler), since roster_target/layers/owner all
-    change the result for the SAME four key fields.
+    """de.compute_composite + bm.availability_with_assumption, cached (work order
+    2026-08-24b item 3 / R38) on (frozenset(drafted_name_keys), as_of_pick,
+    target_pick, wait_pick, board_assumption) -- measured at ~5.5s per call
+    (2000-sim montecarlo, before this work order's other fixes) on the real 433-row
+    board, the dominant cost of a render by a wide margin. A rerun where none of
+    those five have changed -- every idle 6-second poll that finds no new pick, or
+    any other widget interaction that triggers a full rerun without one -- is the
+    common case, and now costs nothing instead of paying for the simulation again.
+    Cache lives in st.session_state (board_model.py itself must stay UI-framework-free,
+    per this repo's own grep check), and is cleared on every setup save
+    (render_setup_screen's submit handler), since roster_target/layers/owner all
+    change the result for the SAME key fields.
+
+    `board_assumption` (work order 2026-08-31 item B / R45) added to the cache key
+    deliberately -- each mode is a genuinely different board, not a display option
+    over one shared computation.
     """
     drafted_name_keys = draft_state.drafted_name_keys(state)
-    key = (frozenset(drafted_name_keys), as_of_pick, target_pick, wait_pick)
+    key = (frozenset(drafted_name_keys), as_of_pick, target_pick, wait_pick, board_assumption)
     cache = st.session_state.setdefault("board_cache", {})
     if key in cache:
         return cache[key]
     board = de.compute_composite(master)
-    board = bm.availability_with_band(
+    board = bm.availability_with_assumption(
         board,
         as_of_pick=as_of_pick,
         target_pick=target_pick,
@@ -151,6 +161,7 @@ def compute_board(
         team_bias=team_bias,
         drafted_name_keys=drafted_name_keys,
         owner_roster_by_manager=draft_state.roster_counts_by_manager(state),
+        mode=board_assumption,
         wait_pick=wait_pick,
     )
     if "survival_probability_wait" not in board.columns:
@@ -319,6 +330,19 @@ def main() -> None:
         if window_as_of < o < survival_target and m != config.OWNER
     ]
 
+    # Work order 2026-08-31 item B (R45): board-assumption toggle, read before
+    # compute_board since it changes which board that call returns. Rendered here
+    # (ahead of the rest of the page) because Streamlit needs the widget's value
+    # before the data it drives can be computed -- "observed_reach" only appears once
+    # its data exists (bm.board_assumption_modes_available), so the control degrades
+    # to a plain two-way choice rather than offering a mode that would silently no-op.
+    assumption_modes = bm.board_assumption_modes_available()
+    board_assumption = st.radio(
+        "Board assumption", assumption_modes, index=0, horizontal=True,
+        format_func=lambda m: bm.BOARD_ASSUMPTION_LABELS[m],
+        label_visibility="collapsed", key="board_assumption",
+    ) if len(assumption_modes) > 1 else assumption_modes[0]
+
     # wait_pick asks the SAME simulation run for a second, further checkpoint (work
     # order 2026-08-24 item 2 / R30) -- when on the clock, survival_target already IS
     # wait_reference, so there is nothing further to ask for. compute_board caches this
@@ -329,6 +353,7 @@ def main() -> None:
         as_of_pick=owner_next if owner_on_clock else on_clock - 1,
         target_pick=survival_target,
         wait_pick=wait_reference if wait_reference != survival_target else None,
+        board_assumption=board_assumption,
     )
     available = board[~board["name_key"].isin(draft_state.drafted_name_keys(state))]
 
@@ -439,6 +464,15 @@ def main() -> None:
                 ch.render_route_card(r, i, owner_next, wait_reference, owner_on_clock, theme),
                 unsafe_allow_html=True,
             )
+
+        # Work order 2026-08-31 item A (R44): "the single most useful artifact the
+        # strategy analysis produced" -- best-available VORP now vs expected at the
+        # owner's own next pick, per position. Reads `available` (the SAME board the
+        # routes above were just built from) so this runs no second simulation.
+        st.markdown(
+            ch.render_cost_of_waiting(bm.cost_of_waiting(available), owner_next, wait_reference, theme),
+            unsafe_allow_html=True,
+        )
 
         left, right = st.columns([2.4, 1])
         with left:
@@ -571,13 +605,22 @@ def main() -> None:
         show = full.rename(columns={
             "reference_adp_rank": "Sleeper", "player": "Player", "position": "Pos",
             "nfl_team": "Team", "composite_score": "Value", "vorp": "Over repl",
+            "vorp_waiver": "Over waiver",
             "survival_probability": f"At {survival_target}", "bonus_est_ppr": "Bonus",
             "factor_score_recomputed": "Factors", "p_got_injured": "Injury",
             "archetype": "Archetype",
-        })[[
-            "Sleeper", "Player", "Pos", "Team", "Market", "Reach", "Value", "Over repl",
-            f"At {survival_target}", "Bonus", "Factors", "Injury", "Timing", "Archetype", "Note",
-        ]]
+        })
+        # Work order 2026-08-31 item C (R46): "display alongside VORP for picks past
+        # round 8 only" -- a second, deeper baseline that only matters once the
+        # last-starter comparison (`vorp`/"Over repl") stops being the relevant
+        # alternative, i.e. once the owner is drafting bench depth, not a lineup slot.
+        # Omitted entirely before round 9, rather than shown blank, since it isn't a
+        # meaningful comparison yet.
+        col_order = ["Sleeper", "Player", "Pos", "Team", "Market", "Reach", "Value", "Over repl"]
+        if config.round_of_pick(on_clock) > 8:
+            col_order.append("Over waiver")
+        col_order += [f"At {survival_target}", "Bonus", "Factors", "Injury", "Timing", "Archetype", "Note"]
+        show = show[col_order]
         st.caption(f"Showing {len(show)} of {len(available)}. Click any column heading to sort.")
         st.dataframe(
             show,
@@ -588,6 +631,11 @@ def main() -> None:
                 "Sleeper": st.column_config.NumberColumn(format="%d", help="Kickers moved to round 14"),
                 "Value": st.column_config.NumberColumn(format="%.1f"),
                 "Over repl": st.column_config.NumberColumn(format="%+.0f"),
+                "Over waiver": st.column_config.NumberColumn(
+                    format="%+.0f", help="Value over waiver-wire level (~12x roster target deep) "
+                    "rather than over the last starter -- the relevant baseline for a late-round "
+                    "roster dart, not a lineup decision. Never replaces 'Over repl', never affects "
+                    "ranking or edge."),
                 f"At {survival_target}": st.column_config.ProgressColumn(
                     format="%.0f%%", min_value=0, max_value=1),
                 "Market": st.column_config.TextColumn(

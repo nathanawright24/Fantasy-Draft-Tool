@@ -360,12 +360,21 @@ def render_route_card(route: dict, index: int, this_pick: int, wait_reference: i
         + "."
     ) if short else "This path fills every slot you planned for."
     tag = ["ROUTE A", "ROUTE B", "ROUTE C"][index]
+    # Urgent fix, 2026-08-30: a short gap to the owner's next turn means the wait
+    # filter had nothing to say (everyone's odds are high) -- these are the
+    # fallback, unfiltered-by-wait top-by-edge cards, labeled as such rather than
+    # showing the normal urgency sentence.
+    short_gap_label = (
+        '<span style="font-size:10px;color:' + t["muted"] + ';font-weight:600">short gap -- nothing is urgent</span>'
+        if route.get("short_gap") else
+        f'<span style="font-size:10px;color:{t["good"] if tm.worth_the_pick else t["warn"]};font-weight:600">{html.escape(tm.sentence)}</span>'
+    )
     return f"""
 <div class="nk-card" style="border-top:2px solid {color}">
   <div style="display:flex;justify-content:space-between;align-items:baseline">
     <div><span style="font-size:11px;font-weight:600;letter-spacing:.1em;color:{color}">{tag}</span>
     <span style="font-size:14px;font-weight:500;margin-left:8px">{bm.POSITION_WORDS[pos]} now</span></div>
-    <span style="font-size:10px;color:{tm.worth_the_pick and t['good'] or t['warn']};font-weight:600">{html.escape(tm.sentence)}</span>
+    {short_gap_label}
   </div>
   <div style="display:flex;gap:10px;margin-top:8px">
     <div style="min-width:184px;border:1px solid {color};border-radius:8px;padding:8px 10px;
@@ -392,6 +401,37 @@ def render_route_card(route: dict, index: int, this_pick: int, wait_reference: i
   </div>
   <div style="font-size:11px;color:{t['muted']};margin-top:8px;border-left:2px solid {color};
        padding-left:8px">{html.escape(cost)}</div>
+</div>
+"""
+
+
+def render_cost_of_waiting(rows: list[dict], this_pick: int, next_pick: int, theme: dict) -> str:
+    """Work order 2026-08-31 item A (R44). `rows` is board_model.cost_of_waiting's own
+    output -- one dict per position with best_now/best_next/vorp_lost already computed,
+    nothing recomputed here."""
+    t = theme
+    total = sum(r["vorp_lost"] for r in rows)
+    cells = "".join(
+        f'<div style="flex:1;min-width:64px">'
+        f'<div style="font-size:10px;font-weight:600;color:{bm.POSITION_COLORS.get(r["position"], t["muted"])}">'
+        f'{r["position"]}</div>'
+        f'<div style="font-size:15px;font-weight:500" class="nk-num">{r["best_now"]:.0f}'
+        f'<span style="font-size:9px;color:{t["faint"]}"> now</span></div>'
+        f'<div style="font-size:12px;color:{t["muted"]}" class="nk-num">{r["best_next"]:.0f}'
+        f'<span style="font-size:9px;color:{t["faint"]}"> at {next_pick}</span></div>'
+        f'<div style="font-size:12px;font-weight:600;color:{t["bad"] if r["vorp_lost"] > 5 else t["muted"]}" '
+        f'class="nk-num">-{r["vorp_lost"]:.0f}</div>'
+        f'</div>'
+        for r in rows
+    )
+    return f"""
+<div class="nk-card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline">
+    <div class="nk-kicker">Cost of waiting: {this_pick} to {next_pick}</div>
+    <div style="font-size:13px;font-weight:600;color:{t["bad"] if total > 20 else t["muted"]}" class="nk-num">
+      -{total:.0f} total</div>
+  </div>
+  <div style="display:flex;gap:12px;margin-top:6px">{cells}</div>
 </div>
 """
 

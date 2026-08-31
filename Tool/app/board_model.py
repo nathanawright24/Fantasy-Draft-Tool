@@ -599,8 +599,14 @@ def candidates_for_pick(
     shape: dict[str, int],
     used: set[str],
     min_availability: float = 0.5,
+    ignore_wait: bool = False,
 ) -> pd.DataFrame:
     """Who is worth spending `pick` on.
+
+    `ignore_wait` (urgent fix, 2026-08-30): skips ONLY the wait-threshold cut below --
+    every other filter (shape/hard_avoid/no_market/min_availability) still applies.
+    Default False, so every existing caller is unaffected; build_routes' own
+    short-gap fallback is the only caller that passes True.
 
     Sorted on VALUE first (work order 2026-08-24b item 2, fixing "the route sorter
     never looks at value"): `edge` (item 4's drop-off-adjusted vorp -- vorp net of how
@@ -662,7 +668,7 @@ def candidates_for_pick(
         & (intel_tag != "hard_avoid").to_numpy()
         & ~no_market
         & (avail_arr >= min_availability)
-        & (wait_arr < WAIT_THRESHOLD)
+        & ((wait_arr < WAIT_THRESHOLD) | ignore_wait)
     )
     if not mask.any():
         return pd.DataFrame(columns=["player", "position", "on_list", "priority", "edge"])
@@ -857,7 +863,20 @@ def build_routes(board: pd.DataFrame, roster_counts: dict, this_pick: int, on_cl
     remaining = {pos: cap - roster_counts.get(pos, 0) for pos, cap in config.ROSTER_TARGET.items()}
     schedule = [p for p in picks if p > this_pick][:ROUTE_LEGS]
     anchors = candidates_for_pick(board, this_pick, this_pick, next_after, remaining, set(), min_availability=0.0)
+    # Urgent fix, 2026-08-30: a short gap to the owner's next turn (e.g. slot 2's
+    # even-to-odd 3-pick wrap) puts every real candidate's wait odds above
+    # WAIT_THRESHOLD -- nothing is "urgent" over a 3-pick gap, so the normal filter
+    # correctly empties out, but build_routes must never return zero cards. Falls
+    # back to the SAME candidates, wait filter only, ranked by the same edge-based
+    # tier -- edge formula and WAIT_THRESHOLD itself untouched.
+    short_gap = len(anchors) < n_routes
+    if short_gap:
+        anchors = candidates_for_pick(
+            board, this_pick, this_pick, next_after, remaining, set(), min_availability=0.0, ignore_wait=True
+        )
     routes = [build_route(a["row"], remaining, board, schedule, this_pick) for _, a in anchors.head(n_routes).iterrows()]
+    for r in routes:
+        r["short_gap"] = short_gap
     # Work order 2026-08-29c item 4 (R42): "anchors are selected by edge, then the
     # three routes are re-sorted by a key that does not contain it." Primary key is
     # now edge_sum net of reach_penalty_sum/need_discount_sum, PLUS pace_urgency_sum
@@ -872,6 +891,148 @@ def build_routes(board: pd.DataFrame, roster_counts: dict, this_pick: int, on_cl
         reverse=True,
     )
     return routes
+
+
+# ---------------------------------------------------------------------------
+# Work order 2026-08-31 item B (R45): board-assumption toggle. Three states, all
+# affecting AVAILABILITY ONLY -- vorp/composite_score are computed upstream in
+# compute_composite and never touch reference_adp_rank or a survival curve at all;
+# `edge`'s own FORMULA (vorp minus the E[max vorp at target] mechanism) is identical
+# in every mode, only the survival numbers feeding that expectation move.
+# ---------------------------------------------------------------------------
+BOARD_ASSUMPTION_MODES = ["adp_order", "observed_reach", "pessimistic"]
+BOARD_ASSUMPTION_LABELS = {
+    "adp_order": "ADP order",
+    "observed_reach": "Observed reach",
+    "pessimistic": "Pessimistic",
+}
+
+_alt_league_deltas_cache: dict[str, float] | None = None
+
+
+def _alt_league_position_deltas() -> dict[str, float]:
+    """position -> median(sleeper_rank - alt_pick) from the alt-league draft.
+    Positive means the alt league drafts that position EARLIER than Sleeper rank
+    predicts (worse availability under "observed_reach"); negative means later
+    (better) -- e.g. the owner's own measurement, QB -18.5 (goes much later, so QB
+    gets BETTER), RB/WR positive (go earlier, so worse).
+
+    Empty until data/derived/alt_league_position_deltas.csv exists, which it does not
+    yet -- see config.ALT_LEAGUE_POSITION_DELTAS_PATH's own comment for why this is
+    deliberately left as a reviewed build step rather than guessed at here. Empty
+    means `board_assumption_modes_available` simply never offers "observed_reach",
+    and `availability_with_assumption` falls back to "adp_order" if asked for it
+    anyway -- the toggle degrades gracefully, it doesn't guess.
+
+    Cached at module level, same reasoning as `_position_offsets_cache`.
+    """
+    global _alt_league_deltas_cache
+    if _alt_league_deltas_cache is None:
+        path = config.ALT_LEAGUE_POSITION_DELTAS_PATH
+        if path.exists():
+            df = pd.read_csv(path)
+            _alt_league_deltas_cache = {row["position"]: float(row["delta"]) for _, row in df.iterrows()}
+        else:
+            _alt_league_deltas_cache = {}
+    return _alt_league_deltas_cache
+
+
+def board_assumption_modes_available() -> list[str]:
+    """Which of BOARD_ASSUMPTION_MODES are actually usable right now. "observed_reach"
+    only appears once `_alt_league_position_deltas` has real data -- an unpopulated
+    toggle that silently no-ops is worse than one that honestly isn't offered yet
+    (same principle as the layers-off / unmodelled-seats indicators)."""
+    modes = ["adp_order", "pessimistic"]
+    if _alt_league_position_deltas():
+        modes.insert(1, "observed_reach")
+    return modes
+
+
+def availability_with_assumption(
+    board: pd.DataFrame,
+    as_of_pick: int,
+    target_pick: int,
+    manager_priors: pd.DataFrame,
+    team_bias: pd.DataFrame,
+    drafted_name_keys: set[str],
+    owner_roster_by_manager: dict,
+    mode: str = "adp_order",
+    n_sims: int = N_SIMS_UI,
+    wait_pick: int | None = None,
+) -> pd.DataFrame:
+    """The same `availability_with_band` pass, under one of three assumptions about
+    how the FIELD drafts (work order 2026-08-31 item B / R45).
+
+    "adp_order": unmodified -- current behavior, exactly `availability_with_band`.
+
+    "observed_reach": shifts `reference_adp_rank` by the alt-league's measured
+    per-position delta on a COPY of `board` before running the normal pass, then
+    restores the ORIGINAL rank on the returned frame -- reach_penalty/
+    market_reach_gap/display (which read reference_adp_rank straight off whatever
+    this function returns) never see the shifted value, only the survival curve's
+    own fit does, for exactly this one call. Falls back to "adp_order" when the
+    alt-league deltas aren't built yet (see `_alt_league_position_deltas`).
+
+    "pessimistic": the worst-case quantile of the SAME survival distribution --
+    survival_probability minus its own 95%-CI band, the identical mechanism item 8 /
+    R44 already uses for route-leg odds (`leg_survival_quantiles`), generalized here
+    to the primary number instead of a route-leg-only figure.
+    """
+    if mode == "observed_reach":
+        deltas = _alt_league_position_deltas()
+        if deltas:
+            shifted = board.copy()
+            shift = shifted["position"].map(deltas).fillna(0.0)
+            shifted["reference_adp_rank"] = shifted["reference_adp_rank"] - shift
+            out = availability_with_band(
+                shifted, as_of_pick, target_pick, manager_priors, team_bias,
+                drafted_name_keys, owner_roster_by_manager, n_sims, wait_pick,
+            )
+            out["reference_adp_rank"] = board["reference_adp_rank"].to_numpy()
+            return out
+        mode = "adp_order"  # graceful fallback -- see board_assumption_modes_available
+
+    out = availability_with_band(
+        board, as_of_pick, target_pick, manager_priors, team_bias,
+        drafted_name_keys, owner_roster_by_manager, n_sims, wait_pick,
+    )
+    if mode == "pessimistic":
+        out["survival_probability"] = (out["survival_probability"] - out["survival_band"]).clip(0.0, 1.0)
+        if "survival_probability_wait" in out.columns and "survival_band_wait" in out.columns:
+            out["survival_probability_wait"] = (
+                out["survival_probability_wait"] - out["survival_band_wait"]
+            ).clip(0.0, 1.0)
+    return out
+
+
+def cost_of_waiting(board: pd.DataFrame) -> list[dict]:
+    """Work order 2026-08-31 item A (R44): for each position, best-available VORP
+    RIGHT NOW vs the expected best-available at the owner's own next pick, with the
+    difference -- "the single most useful artifact the strategy analysis produced,"
+    previously only an ad-hoc script. `board` must already be the output of an
+    availability_with_band (or availability_with_assumption) call made FOR this pick
+    -- `best_next` reads `board.attrs["edge_expectation_at_target"]`, the SAME E[max
+    vorp at target] `edge` itself already nets out (work order 2026-08-29c item 2),
+    so this is derived from the SAME availability pass as `edge` and runs no second
+    simulation. Falls back to `best_now` (zero apparent cost of waiting) when that
+    attrs key is missing, e.g. a bare compute_composite board with no availability
+    pass run yet.
+
+    Eligibility mirrors candidates_for_pick's own filters (hard_avoid/no_market) --
+    `board` is expected to already be drafted-player-filtered (the same `available`
+    frame every other cockpit panel reads), so there is no separate `used` set here.
+    """
+    intel_tag = board["intel_tag"] if "intel_tag" in board.columns else pd.Series(np.nan, index=board.index)
+    no_market = board["reference_adp_rank"].isna().to_numpy() & board["comparison_adp_value"].isna().to_numpy()
+    eligible = board[(intel_tag != "hard_avoid").to_numpy() & ~no_market]
+    edge_expectation = board.attrs.get("edge_expectation_at_target", {})
+    out = []
+    for pos in config.POSITIONS:
+        sub = eligible[eligible["position"] == pos]
+        best_now = float(sub["vorp"].max()) if len(sub) else 0.0
+        best_next = float(edge_expectation.get(pos, best_now))
+        out.append({"position": pos, "best_now": best_now, "best_next": best_next, "vorp_lost": best_now - best_next})
+    return out
 
 
 # ===========================================================================

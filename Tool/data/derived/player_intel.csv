@@ -1,67 +1,32 @@
 name_key,position,player,pick_window,priority,tag,note
-puka nacua,WR,Puka Nacua,5,1.0,target,Top 4 (Bijan/Gibbs/Chase/JSN) expected gone in some order
-christian mccaffrey,RB,Christian McCaffrey,5,2.0,target,Only elite RB1 realistically reachable
-amon ra st brown,WR,Amon-Ra St. Brown,5,3.0,target,
-chase brown,RB,Chase Brown,20,1.0,target,Doubted to last to 20
-omarion hampton,RB,Omarion Hampton,20,2.0,target,
-ken walker,RB,Ken Walker III,20,3.0,target,**Nickname alias needed — no ADP joined from either source**
-aj brown,WR,A.J. Brown,20,4.0,target,Trusty Veteran archetype: 30.6% injury rate
-nico collins,WR,Nico Collins,20,5.0,target,
-aj brown,WR,A.J. Brown,29,1.0,target,Hoped fallback if he slides
-nico collins,WR,Nico Collins,29,2.0,target,
-kyren williams,RB,Kyren Williams,29,3.0,target,
-chris olave,WR,Chris Olave,29,4.0,target,ADP above factors per grid divergence
-josh allen,QB,Josh Allen,29,5.0,target,Only QB worth taking this early
-brock bowers,TE,Brock Bowers,29,6.0,target,
-trey mcbride,TE,Trey McBride,29,7.0,target,
-ladd mcconkey,WR,Ladd McConkey,44,1.0,target,
-emeka egbuka,WR,Emeka Egbuka,44,2.0,target,
-jaylen waddle,WR,Jaylen Waddle,44,3.0,target,Largest positive factor-grid divergence at WR
-devonta smith,WR,DeVonta Smith,44,4.0,target,
-cam skattebo,RB,Cam Skattebo,44,5.0,target,No Sleeper ADP — verify status
-garrett wilson,WR,Garrett Wilson,44,6.0,target,
-zay flowers,WR,Zay Flowers,44,7.0,target,
-sam laporta,TE,Sam LaPorta,53,,watch,"**Target tag removed 2026-08-24.** 16th by VORP in the Sleeper 48-72 band (15.59) and sharp edge -22, i.e. expensive here. Owner read: a top-6 TE needs to be the number 1 or 2 target on his own offence, and he is third behind Gibbs and Jameson Williams. Injury history. Pick 53 reopened to best available"
-dandre swift,RB,D'Andre Swift,53,3.0,target,Preferred if available
-dj moore,WR,DJ Moore,53,2.0,target,"VORP 21.11, sharp +13. Best of the WR options once age fades are respected"
-rome odunze,WR,Rome Odunze,53,1.0,target,"VORP 22.51, sharp +13, Breakout Candidate. Best combined VORP-plus-sharp play in the band that is not age-faded"
-quinshon judkins,RB,Quinshon Judkins,53,,fade,Explicit dislike
-treveyon henderson,RB,TreVeyon Henderson,53,,fade,Vrabel usage doubt
-bhayshul tuten,RB,Bhayshul Tuten,53,,fade,Workload uncertainty
-terry mclaurin,WR,Terry McLaurin,53,,watch,"**Highest VORP in the whole 48-72 band: 39.51, sharp +12.** Faded for age. Owner will reconsider. If the age fade is a reflex rather than a read, he is the pick at 53"
-mike evans,WR,Mike Evans,53,,fade,Age. VORP 26.51 but sharp only +4
-davante adams,WR,Davante Adams,53,,watch,"VORP 37.51, second highest in the band, but sharp -1 so no market edge. Same age question as McLaurin"
-jameson williams,WR,Jameson Williams,53,,fade,
-carnell tate,WR,Carnell Tate,53,,fade,
-jadarian price,RB,Jadarian Price,68,1.0,target,If RB2 still empty
-christian watson,WR,Christian Watson,68,2.0,target,Source arithmetic error — use recomputed score of 8
-marvin harrison,WR,Marvin Harrison Jr.,68,3.0,target,
-parker washington,WR,Parker Washington,68,4.0,target,Only if Brian Thomas unavailable at 77
-rj harvey,RB,RJ Harvey,77,1.0,target,If RB2 still empty
-brian thomas,WR,Brian Thomas Jr.,77,2.0,target,Positive factor divergence
-rome odunze,WR,Rome Odunze,77,3.0,target,
-trevor lawrence,QB,Trevor Lawrence,92,1.0,target,⚠ Bottom of his ADP band — see Hurts/Stafford
-dalton kincaid,TE,Dalton Kincaid,92,2.0,target,TE1 fallback if LaPorta missed
-michael pittman,WR,Michael Pittman Jr.,92,3.0,target,
-josh downs,WR,Josh Downs,92,4.0,target,Wants 5th WR by here
-george kittle,TE,George Kittle,101,1.0,target,Take 2 of Kittle/Andrews/Kelce if no TE yet
-mark andrews,TE,Mark Andrews,101,2.0,target,
-travis kelce,TE,Travis Kelce,101,3.0,target,
-josh downs,WR,Josh Downs,101,4.0,target,
-xavier worthy,WR,Xavier Worthy,116,1.0,target,
-jonathon brooks,RB,Jonathon Brooks,116,2.0,target,⚠ −2.1 composite; Warren/Stevenson better at same cost
-rachaad white,RB,Rachaad White,116,3.0,target,⚠ −0.6 composite
-brock purdy,QB,Brock Purdy,116,4.0,target,QB2 — designated sacrifice per R11
-jared goff,QB,Jared Goff,125,1.0,target,
-jalen coker,WR,Jalen Coker,125,2.0,target,
-rashid shaheed,WR,Rashid Shaheed,125,3.0,target,
-tyjae spears,RB,Tyjae Spears,140,1.0,target,⚠ −10.0 composite
-jordan love,QB,Jordan Love,140,2.0,target,
-emmett johnson,RB,Emmett Johnson,149,1.0,target,
-tank dell,WR,Tank Dell,149,2.0,target,⚠ −28.6; no Sleeper ADP
-kyler murray,QB,Kyler Murray,149,3.0,target,
-tyler allgeier,RB,Tyler Allgeier,164,1.0,target,"⚠ −33.4 composite, worst on list"
-jalen nailor,WR,Jalen Nailor,164,2.0,target,
-sam darnold,QB,Sam Darnold,164,3.0,target,
-oronde gadsden,TE,Oronde Gadsden II,173,1.0,target,Super-late TE
-brenton strange,TE,Brenton Strange,173,2.0,target,
+amon ra st brown,WR,Amon-Ra St. Brown,5.0,1.0,target,"128.0 vorp, Prime WR1, 11.3% injury, 33.8% boom, factor 38"
+puka nacua,WR,Puka Nacua,5.0,2.0,target,"135.1 vorp if he falls. ADP 4, so roughly a coin flip at 5"
+jaxon smith njigba,WR,Jaxon Smith-Njigba,5.0,3.0,target,"127.5 vorp, ADP 5, same cohort rates as Amon-Ra"
+christian mccaffrey,RB,Christian McCaffrey,5.0,,fade,"**Faded 08-30.** Same vorp as the WRs (126.3) but injury flag `Concerned`, 21.7% injury vs 11.3%, 20.0% boom vs 33.8%, factor 25 vs 38. The 3-game RB haircut is positional, so his own flag never reaches `ppr_base`"
+brock bowers,TE,Brock Bowers,20.0,1.0,target,"**63.9 vorp, factor 36 — beats every WR available at 20.** Solves TE for the whole draft"
+trey mcbride,TE,Trey McBride,20.0,2.0,target,"63.0 vorp, factor 40. Interchangeable with Bowers"
+devonta smith,WR,DeVonta Smith,20.0,3.0,target,"60.0 vorp, factor 32, Minimal Concern. Best WR at 20 on factors plus injury"
+rashee rice,WR,Rashee Rice,20.0,,hard_avoid,"**Owner read: aDOT too low, KC running more after the Ken Walker signing.** Corroborated independently — Breakout Candidate archetype at 29.6% bust / 18.2% boom vs 12.7% / 33.8% for Prime WR1, and only 5.88 bonus estimate despite 32 more vorp than DeVonta, which is the reception-heavy signature"
+derrick henry,RB,Derrick Henry,20.0,,fade,68.3 vorp but factor −1 and injury `Concerned`
+breece hall,RB,Breece Hall,29.0,1.0,target,"**71.7 vorp, factor 21, 27.9% boom.** Jets risk acknowledged and accepted; Clay's projections already assume a bad offence and he still out-projects backs on better teams"
+javonte williams,RB,Javonte Williams,29.0,2.0,target,58.7 vorp. The pessimistic-board fallback if Hall is reached
+jeremiyah love,RB,Jeremiyah Love,29.0,,fade,"**Faded 08-30.** 73.8 vorp but factor score 5 — the grid, which reads offensive PPG rank and QB grade, agrees with the owner about Arizona"
+josh jacobs,RB,Josh Jacobs,29.0,,fade,58.8 vorp but factor −7
+josh allen,QB,Josh Allen,29.0,,fade,**Owner ruling 08-30:** cannot justify at 29 given the RB/WR disadvantage in rounds 2–3. Prefers 2 RB + 1 WR early with QB in the 8th or 9th
+cam skattebo,RB,Cam Skattebo,44.0,1.0,target,"**43.7 vorp — the one back that clears the round 4–6 dead zone** (band mean 17.6 RB vs 32.0 WR). ADP 43 against pick 44, so a coin flip; budget for the fallback"
+travis etienne,RB,Travis Etienne,44.0,2.0,target,"41.9 vorp, ADP 44. The realistic fallback"
+quinshon judkins,RB,Quinshon Judkins,44.0,3.0,target,28.9 vorp. Previously faded; reinstated as the pessimistic-board fallback since RB2 must land by 44
+garrett wilson,WR,Garrett Wilson,44.0,4.0,target,54.0 vorp if the RB slot is already filled
+terry mclaurin,WR,Terry McLaurin,53.0,1.0,target,"**39.5 vorp, highest in the 48–72 band.** Age fade reconsidered; see review notes"
+rome odunze,WR,Rome Odunze,53.0,2.0,target,"Reach +13, Breakout Candidate"
+dj moore,WR,DJ Moore,53.0,3.0,target,Reach +13
+sam laporta,TE,Sam LaPorta,53.0,,watch,Target tag removed 08-24. **Moot if Bowers or McBride is taken at 20**
+matthew stafford,QB,Matthew Stafford,101.0,1.0,target,14.7 vorp. Best QB after the cliff; ADP 95 lands at pick 101
+brock purdy,QB,Brock Purdy,101.0,2.0,target,"12.2 vorp, ADP 120"
+jalen hurts,QB,Jalen Hurts,101.0,3.0,target,Only if he slides; alt league saw QBs go 18.5 picks later than Sleeper rank
+trevor lawrence,QB,Trevor Lawrence,92.0,,fade,"**Faded 08-30.** 27.9 composite, the weakest QB in his ADP neighbourhood. Stafford beats him by 5.2"
+justin herbert,QB,Justin Herbert,92.0,,fade,"Same reason, 26.7"
+mark andrews,TE,Mark Andrews,125.0,1.0,target,2.3 vorp. TE2 is a bye-week body regardless of path
+dallas goedert,TE,Dallas Goedert,125.0,2.0,target,"9.4 vorp, ADP 121"
+jayden higgins,WR,Jayden Higgins,,,hard_avoid,**Torn ACL.** No ADP from either source; projections predate the injury
+jonathon brooks,RB,Jonathon Brooks,,,hard_avoid,Largest Sleeper-later gap on the board (+61). Verify status before ever reinstating

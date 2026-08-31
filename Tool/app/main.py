@@ -36,7 +36,14 @@ st.set_page_config(page_title="2026 Live Draft Tool", layout="wide")
 # ---------------------------------------------------------------------------
 @st.cache_data
 def load_master() -> pd.DataFrame:
-    return pd.read_csv(config.PLAYER_MASTER_PATH)
+    # `intel_windows` is a comma-joined STRING of pick numbers ("29" or "5, 20"), but
+    # whenever every current row happens to be a single window (no player tagged
+    # across more than one), the column has no comma anywhere in it and pandas'
+    # dtype sniffer reads it as float64 instead -- "29" becomes 29.0 in memory, then
+    # "29.0" once stringified again, which draft_engine._near_current's plain int()
+    # cannot parse. Pin it to str so parsing never depends on how many players
+    # happen to have multiple windows in this season's intel table.
+    return pd.read_csv(config.PLAYER_MASTER_PATH, dtype={"intel_windows": str})
 
 
 @st.cache_data

@@ -579,6 +579,43 @@ def load_college_bias(report: JoinReport) -> pd.DataFrame:
 INTEL_REQUIRED_COLUMNS = {"player", "position", "pick_window", "tag"}
 
 
+def _align_intel_row_cells(header: list[str], cells: list[str], report: JoinReport) -> list[str]:
+    """Self-heals one specific malformed-row shape in the intel table: a `hard_avoid`
+    row that gives `pick_window` its own "--" placeholder but drops the optional
+    `priority` cell entirely instead of also placing "--" there (Rashee Rice's
+    hard_avoid row does this correctly; Jayden Higgins' and Jonathon Brooks' rows in
+    the 2026-08-30 rewrite do not). Every cell from `tag` onward then shifts left by
+    one, so `tag` ends up holding the `note` prose and `note` disappears -- the exact
+    "unrecognized tag" failure this produced.
+
+    Only engages when the row is short by exactly one cell AND a straight positional
+    zip would produce a `tag` outside `config.INTEL_VALID_TAGS` -- a validly-shaped
+    short row (the file's own template allows omitting the trailing `note`) zips
+    correctly already and is returned untouched. If inserting a blank `priority`
+    still doesn't yield a recognized tag, the row doesn't match this known pattern;
+    fall through unchanged and let the existing tag-validation `report.fail` below
+    catch it, rather than silently guessing further.
+
+    `2026/` is read-only (CLAUDE.md) -- this is the build-layer correction that policy
+    calls for, not an edit to the source file.
+    """
+    if len(cells) != len(header) - 1 or "priority" not in header:
+        return cells
+    if dict(zip(header, cells)).get("tag") in config.INTEL_VALID_TAGS:
+        return cells
+    fixed = cells[:]
+    fixed.insert(header.index("priority"), "")
+    if dict(zip(header, fixed)).get("tag") in config.INTEL_VALID_TAGS:
+        label = cells[header.index("player")] if "player" in header else "<unknown row>"
+        report.note(
+            f"player_intel: '{label}' row was missing its `priority` cell (pick_window's own "
+            f"'--' placeholder wasn't duplicated) -- inferred a blank priority so tag/note land "
+            f"correctly instead of shifting left"
+        )
+        return fixed
+    return cells
+
+
 def parse_player_intel(report: JoinReport) -> pd.DataFrame:
     """Parses the "Intel table" markdown table out of `2026/PLAYER-INTEL-2026.md` into
     a small structured frame, joined onto player_master later on name_key + position --
@@ -612,6 +649,7 @@ def parse_player_intel(report: JoinReport) -> pd.DataFrame:
             if INTEL_REQUIRED_COLUMNS <= set(cells):
                 header = cells
             continue
+        cells = _align_intel_row_cells(header, cells, report)
         records.append(dict(zip(header, cells)))
 
     if not records:

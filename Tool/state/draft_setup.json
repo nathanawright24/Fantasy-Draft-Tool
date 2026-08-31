@@ -5,9 +5,9 @@
     null,
     null,
     null,
-    null,
-    null,
-    null,
+    "Jayden",
+    "Colin",
+    "Asa",
     null,
     null,
     null,
@@ -27,7 +27,7 @@
     "factor_grids": true,
     "bonus_model": false,
     "oline_rankings": true,
-    "manager_priors": false,
+    "manager_priors": true,
     "nfl_team_bias": false,
     "college_bias": false,
     "archetype_priors": true,
@@ -35,5 +35,5 @@
   },
   "te1_fork_player": "Sam LaPorta",
   "show_te1_fork": false,
-  "sleeper_draft_id": "1399509453258100736"
+  "sleeper_draft_id": "1389347707402878977"
 }

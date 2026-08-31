@@ -1,10 +1,10 @@
-Join report -- generated 2026-08-29T16:00:30
+Join report -- generated 2026-08-31T06:57:44
 ==============================================================================
 
 HARD FAILURES (0) -- these must be fixed before shipping
 ------------------------------------------------------------------------------
 
-NOTES / FLAGGED (131) -- unmatched names, coverage boundaries,
+NOTES / FLAGGED (133) -- unmatched names, coverage boundaries,
 low-sample flags. Never suppressed; eyeball before trusting a build.
 ------------------------------------------------------------------------------
   - priors/QB: rekeyed 'Cam Ward' to props' 'cameron ward' via NAME_ALIASES -- same real join key from here on, so both the team backfill and the player_master merge pick up the props row
@@ -120,7 +120,9 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: 'Atwell, Tutu' has adp_n=13 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Simpson, Ty' has adp_n=13 (< 15) -- shown but excluded from survival math
   - college_bias_recall: 26 players mapped via model recall (not sourced from any data file -- Sleeper's board carries no college field). Schools covered: ['Alabama', 'Florida', 'Illinois', 'Iowa State', 'Ohio State']. No Florida State or UCF players in the current pool could be confidently matched, so Cailen's and Jayden's college-bias discount has zero eligible targets this year -- a real coverage gap, not a bug.
-  - player_intel: 66 rows parsed from PLAYER-INTEL-2026.md ({'target': 57, 'fade': 6, 'watch': 3})
+  - player_intel: 'Jayden Higgins' row was missing its `priority` cell (pick_window's own '--' placeholder wasn't duplicated) -- inferred a blank priority so tag/note land correctly instead of shifting left
+  - player_intel: 'Jonathon Brooks' row was missing its `priority` cell (pick_window's own '--' placeholder wasn't duplicated) -- inferred a blank priority so tag/note land correctly instead of shifting left
+  - player_intel: 31 rows parsed from PLAYER-INTEL-2026.md ({'target': 20, 'fade': 7, 'hard_avoid': 3, 'watch': 1})
   - manager_priors: 'Asa' has only 1 main-league draft on file -- widen variance
   - manager_priors: 'Asa' shows a >=3-round main-vs-alt divergence at QB or TE -- model as bimodal, do not average into a false middle
   - manager_priors: 'Colin' has only 1 main-league draft on file -- widen variance

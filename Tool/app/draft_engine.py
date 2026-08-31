@@ -133,6 +133,39 @@ def compute_replacement_levels(
     return replacement_level
 
 
+def compute_waiver_levels(
+    df: pd.DataFrame,
+    n_teams: int = config.N_TEAMS,
+    roster_target: dict | None = None,
+) -> dict[str, float]:
+    """Work order 2026-08-31 item C (R46): a SECOND, deeper baseline -- the `ppr_base`
+    of the first player at each position who wouldn't be rostered ANYWHERE in an
+    `n_teams`-team league, roughly `n_teams * ROSTER_TARGET[pos]` deep, instead of
+    `compute_replacement_levels`' last-STARTER cutoff (R17). The last-starter bar is
+    right for a lineup decision; it is the wrong alternative for a round 9-13 dart
+    throw, where the real competing option is whoever is on WAIVERS, not whoever is
+    starting -- see `vorp_waiver`'s own comment in compute_composite for the concrete
+    symptom this fixes.
+
+    Single-stage rank, deliberately simpler than compute_replacement_levels' two-stage
+    flex-aware one: `ROSTER_TARGET` is already a per-position depth (it includes each
+    position's own share of the bench), so there is no shared flex pool left to model
+    at this cutoff.
+    """
+    roster_target = roster_target or config.ROSTER_TARGET
+    waiver_level = {}
+    for pos in config.POSITIONS:
+        values = df.loc[df["position"] == pos, "ppr_base"].dropna().sort_values(ascending=False).to_numpy()
+        rank = n_teams * roster_target.get(pos, 0)  # 0-indexed: rank-th player is the last ROSTERED one
+        if len(values) == 0:
+            waiver_level[pos] = 0.0
+        elif rank < len(values):
+            waiver_level[pos] = float(values[rank])
+        else:
+            waiver_level[pos] = float(values[-1])
+    return waiver_level
+
+
 def compute_composite(
     master: pd.DataFrame,
     weights: dict | None = None,
@@ -171,6 +204,20 @@ def compute_composite(
     replacement_level = compute_replacement_levels(df)
     df["replacement_level"] = df["position"].map(replacement_level)
     df["vorp"] = df["ppr_base"] - df["replacement_level"]
+
+    # Work order 2026-08-31 item C (R46): a SECOND baseline, value over WAIVER level
+    # rather than the last starter. Every RB past pick 92 scores at or below zero VORP
+    # (Aaron Jones at ADP 122 lands at exactly 0.00) against R17's replacement level,
+    # which makes a round 9-13 RB dart read as strictly irrational -- it isn't; it's an
+    # injury hedge scored against the wrong alternative, since ~60 RBs get rostered in
+    # a 12-team league where every manager targets five backs, not the ~24-30 that
+    # `vorp` compares against. Additive and display-only: never replaces `vorp`, never
+    # folds into `composite_score`/`edge` (work order's own "do not replace VORP; do
+    # not fold it into edge") -- main_cockpit.py shows it alongside `vorp`, gated to
+    # picks past round 8, where it's actually the relevant comparison.
+    waiver_level = compute_waiver_levels(df)
+    df["waiver_level"] = df["position"].map(waiver_level)
+    df["vorp_waiver"] = df["ppr_base"] - df["waiver_level"]
 
     df["base_norm"] = df.groupby("position")["ppr_base"].rank(pct=True) * 100
     df["bonus_norm"] = df.groupby("position")["bonus_est_ppr"].rank(pct=True) * 100
@@ -215,6 +262,7 @@ def compute_composite(
     df.attrs["disabled_composite_layers"] = disabled
     df.attrs["enabled_composite_weights"] = norm_weights
     df.attrs["replacement_level"] = replacement_level
+    df.attrs["waiver_level"] = waiver_level
     return df
 
 

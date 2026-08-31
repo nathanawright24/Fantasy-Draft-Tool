@@ -1,0 +1,181 @@
+{
+  "picks": [
+    {
+      "overall": 1,
+      "round": 1,
+      "player": "Bijan Robinson",
+      "position": "RB",
+      "nfl_team": "ATL",
+      "manager": "(unmodelled seat 1)"
+    },
+    {
+      "overall": 2,
+      "round": 1,
+      "player": "Jahmyr Gibbs",
+      "position": "RB",
+      "nfl_team": "DET",
+      "manager": "Nathan"
+    },
+    {
+      "overall": 3,
+      "round": 1,
+      "player": "Ja'Marr Chase",
+      "position": "WR",
+      "nfl_team": "CIN",
+      "manager": "(unmodelled seat 3)"
+    },
+    {
+      "overall": 4,
+      "round": 1,
+      "player": "Puka Nacua",
+      "position": "WR",
+      "nfl_team": "LAR",
+      "manager": "(unmodelled seat 4)"
+    },
+    {
+      "overall": 5,
+      "round": 1,
+      "player": "Christian McCaffrey",
+      "position": "RB",
+      "nfl_team": "SF",
+      "manager": "(unmodelled seat 5)"
+    },
+    {
+      "overall": 6,
+      "round": 1,
+      "player": "Jonathan Taylor",
+      "position": "RB",
+      "nfl_team": "IND",
+      "manager": "Jayden"
+    },
+    {
+      "overall": 7,
+      "round": 1,
+      "player": "Jaxon Smith-Njigba",
+      "position": "WR",
+      "nfl_team": "SEA",
+      "manager": "Colin"
+    },
+    {
+      "overall": 8,
+      "round": 1,
+      "player": "Amon-Ra St. Brown",
+      "position": "WR",
+      "nfl_team": "DET",
+      "manager": "Asa"
+    },
+    {
+      "overall": 9,
+      "round": 1,
+      "player": "CeeDee Lamb",
+      "position": "WR",
+      "nfl_team": "DAL",
+      "manager": "(unmodelled seat 9)"
+    },
+    {
+      "overall": 10,
+      "round": 1,
+      "player": "Justin Jefferson",
+      "position": "WR",
+      "nfl_team": "MIN",
+      "manager": "(unmodelled seat 10)"
+    },
+    {
+      "overall": 11,
+      "round": 1,
+      "player": "James Cook",
+      "position": "RB",
+      "nfl_team": "BUF",
+      "manager": "(unmodelled seat 11)"
+    },
+    {
+      "overall": 12,
+      "round": 1,
+      "player": "Chase Brown",
+      "position": "RB",
+      "nfl_team": "CIN",
+      "manager": "(unmodelled seat 12)"
+    },
+    {
+      "overall": 13,
+      "round": 2,
+      "player": "De'Von Achane",
+      "position": "RB",
+      "nfl_team": "MIA",
+      "manager": "(unmodelled seat 12)"
+    },
+    {
+      "overall": 14,
+      "round": 2,
+      "player": "Saquon Barkley",
+      "position": "RB",
+      "nfl_team": "PHI",
+      "manager": "(unmodelled seat 11)"
+    },
+    {
+      "overall": 15,
+      "round": 2,
+      "player": "Omarion Hampton",
+      "position": "RB",
+      "nfl_team": "LAC",
+      "manager": "(unmodelled seat 10)"
+    },
+    {
+      "overall": 16,
+      "round": 2,
+      "player": "Derrick Henry",
+      "position": "RB",
+      "nfl_team": "BAL",
+      "manager": "(unmodelled seat 9)"
+    },
+    {
+      "overall": 17,
+      "round": 2,
+      "player": "Ashton Jeanty",
+      "position": "RB",
+      "nfl_team": "LV",
+      "manager": "Asa"
+    },
+    {
+      "overall": 18,
+      "round": 2,
+      "player": "A.J. Brown",
+      "position": "WR",
+      "nfl_team": "NE",
+      "manager": "Colin"
+    },
+    {
+      "overall": 19,
+      "round": 2,
+      "player": "Drake London",
+      "position": "WR",
+      "nfl_team": "ATL",
+      "manager": "Jayden"
+    },
+    {
+      "overall": 20,
+      "round": 2,
+      "player": "Trey McBride",
+      "position": "TE",
+      "nfl_team": "ARI",
+      "manager": "(unmodelled seat 5)"
+    },
+    {
+      "overall": 21,
+      "round": 2,
+      "player": "George Pickens",
+      "position": "WR",
+      "nfl_team": "DAL",
+      "manager": "(unmodelled seat 4)"
+    },
+    {
+      "overall": 22,
+      "round": 2,
+      "player": "Josh Allen",
+      "position": "QB",
+      "nfl_team": "BUF",
+      "manager": "(unmodelled seat 3)"
+    }
+  ],
+  "sleeper_draft_id": "1399921566099206144"
+}

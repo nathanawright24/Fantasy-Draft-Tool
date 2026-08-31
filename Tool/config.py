@@ -64,6 +64,16 @@ TEAM_BIAS_PATH = DATA_DERIVED / "team_bias.csv"
 # Work order 2026-08-29c item 7 (R43): empirically derived, not hand-set -- see
 # build/pipeline.py's compute_round_band_position_shares.
 ROUND_BAND_POSITION_SHARES_PATH = DATA_DERIVED / "round_band_position_shares.csv"
+# Work order 2026-08-31 item B (R45): per-position median(sleeper_rank - alt_pick)
+# from the alt-league draft, for the "observed reach" board-assumption mode. Not yet
+# built as of this work order -- drafts/alt league official 2026.html parses cleanly
+# (12T x 16R, 192/192 picks, zero dupes/missing) but turning it into this file needs a
+# name-resolution join (its player names are abbreviated, "B. Robinson" style) that
+# CLAUDE.md flags by name as the project's primary correctness risk, with a real prior
+# incident (Bijan Robinson matched to Brian Robinson). board_model.py's mode toggle
+# checks path.exists() and falls back to "adp_order" until this file is built and
+# reviewed -- see board_model._alt_league_position_deltas's own docstring.
+ALT_LEAGUE_POSITION_DELTAS_PATH = DATA_DERIVED / "alt_league_position_deltas.csv"
 ADP_SOURCE_OFFSETS_PATH = DATA_DERIVED / "adp_source_offsets.csv"
 PLAYER_INTEL_PATH = DATA_DERIVED / "player_intel.csv"
 REFERENCE_ADP_PATH = DATA_EXTERNAL / "reference_adp.csv"

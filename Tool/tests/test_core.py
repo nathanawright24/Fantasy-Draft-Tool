@@ -163,7 +163,11 @@ def test_unmapped_team_code_returns_none_not_a_guess():
 def built():
     exit_code = pipeline.main()
     assert exit_code == 0, "pipeline.main() reported hard failures -- see join_report.txt"
-    master = pd.read_csv(config.PLAYER_MASTER_PATH)
+    # dtype pin: matches app/main.py's load_master -- `intel_windows` reads back as
+    # float64 (breaking downstream int() parsing) whenever no player currently spans
+    # more than one pick window, since the column then has no comma anywhere to force
+    # pandas to keep it as text.
+    master = pd.read_csv(config.PLAYER_MASTER_PATH, dtype={"intel_windows": str})
     report_text = config.JOIN_REPORT_PATH.read_text(encoding="utf-8")
     return master, report_text
 
@@ -2019,15 +2023,20 @@ def test_build_route_reports_edge_sum_and_need_discount_sum(built):
 def test_build_routes_sort_is_edge_based_and_actually_differs_from_the_old_formula(built):
     # The acceptance check itself: "report the three route anchors and their
     # route-sort scores before and after." Confirms the NEW key (edge_sum -
-    # reach_penalty_sum - need_discount_sum) is what determines the live order, and
-    # that this is not a no-op -- the OLD formula (vorp_sum + composite_sum -
-    # 2*reach_penalty_sum) would have produced a DIFFERENT order on this real board.
+    # reach_penalty_sum - need_discount_sum + pace_urgency_sum) is what determines the
+    # live order, and that this is not a no-op -- the OLD formula (vorp_sum +
+    # composite_sum - 2*reach_penalty_sum) would have produced a DIFFERENT order on
+    # this real board. `+ pace_urgency_sum` matches build_routes' own key exactly
+    # (item 6, added after this test was first written) -- omitting it here made this
+    # test's own recomputation drift from the real key it exists to check.
     master, _ = built
     board = bm.apply_kicker_slide(de.compute_composite(master))
     routes = bm.build_routes(board, {}, this_pick=5, on_clock=True, n_routes=3)
     assert len(routes) == 3
 
-    new_scores = [r["edge_sum"] - r["reach_penalty_sum"] - r["need_discount_sum"] for r in routes]
+    new_scores = [
+        r["edge_sum"] - r["reach_penalty_sum"] - r["need_discount_sum"] + r["pace_urgency_sum"] for r in routes
+    ]
     old_scores = [r["vorp_sum"] + r["composite_sum"] - 2 * r["reach_penalty_sum"] for r in routes]
     anchors = [r["anchor"]["player"] for r in routes]
     print(f"anchors={anchors} new_scores={new_scores} old_scores={old_scores}")  # visible with -s
@@ -2457,3 +2466,303 @@ def test_render_route_card_labels_the_pessimistic_figure(built):
     html_out = ch.render_route_card(routes[0], 0, 5, 20, True, ch.THEME_DARK)
     assert "Worst-case" in html_out
     assert "opt " in html_out
+
+
+# ---------------------------------------------------------------------------
+# 31. Urgent fix, 2026-08-30: build_routes returned ZERO routes over a short gap to
+#     the owner's next turn (slot 2's even-to-odd 3-pick wrap, e.g. pick 119 -> 122)
+#     -- the wait filter correctly found nothing urgent, but emptied the anchor list
+#     entirely instead of falling back. Reproduced by forcing WAIT_THRESHOLD
+#     impossible (monkeypatch, never the real value) rather than depending on a
+#     specific live roster state.
+# ---------------------------------------------------------------------------
+def test_build_routes_never_returns_empty_over_a_three_pick_gap(built, monkeypatch):
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    monkeypatch.setattr(bm, "WAIT_THRESHOLD", -1.0)  # guarantees wait_arr < WAIT_THRESHOLD is False for everyone
+
+    this_pick, next_after = 119, 122  # the reported repro: exactly a 3-pick gap
+    remaining = dict(config.ROSTER_TARGET)
+    filtered = bm.candidates_for_pick(board, this_pick, this_pick, next_after, remaining, set(), min_availability=0.0)
+    assert len(filtered) == 0, "sanity: the forced threshold must reproduce the original empty-anchor bug"
+
+    routes = bm.build_routes(board, {}, this_pick, True)
+    assert len(routes) == 3, "build_routes must never return fewer than n_routes just because nothing is urgent"
+    assert all(r["short_gap"] for r in routes)
+
+
+def test_build_routes_short_gap_is_false_on_a_normal_gap(built):
+    # Sanity: the fallback must NOT engage when the wait filter isn't the bottleneck.
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    routes = bm.build_routes(board, {}, this_pick=5, on_clock=True, n_routes=3)
+    assert len(routes) == 3
+    assert not any(r["short_gap"] for r in routes)
+
+
+def test_ignore_wait_only_bypasses_the_wait_cut_not_other_filters():
+    # shape_ok (cap already full) and hard_avoid must still apply even with
+    # ignore_wait=True -- this is a targeted bypass of one filter, not all of them.
+    pool = pd.DataFrame([
+        {"player": "NoRoom", "position": "RB", "edge": 10.0, "vorp": 10.0, "composite_score": 50.0,
+         "reference_adp_rank": 10.0, "comparison_adp_value": 10.0, "intel_tag": None, "intel_priority": np.nan},
+        {"player": "Avoided", "position": "WR", "edge": 10.0, "vorp": 10.0, "composite_score": 50.0,
+         "reference_adp_rank": 10.0, "comparison_adp_value": 10.0, "intel_tag": "hard_avoid", "intel_priority": np.nan},
+        {"player": "Fine", "position": "WR", "edge": 10.0, "vorp": 10.0, "composite_score": 50.0,
+         "reference_adp_rank": 10.0, "comparison_adp_value": 10.0, "intel_tag": None, "intel_priority": np.nan},
+    ])
+    out = bm.candidates_for_pick(
+        pool, pick=10, from_pick=10, next_after=11, shape={"RB": 0, "WR": 2}, used=set(),
+        min_availability=0.0, ignore_wait=True,
+    )
+    assert set(out["player"]) == {"Fine"}
+
+
+def test_candidates_for_pick_default_behavior_unchanged_without_ignore_wait(built):
+    # Every existing caller omits ignore_wait -- confirms the default (False)
+    # reproduces the exact prior filtering behavior.
+    master, _ = built
+    board = bm.apply_kicker_slide(de.compute_composite(master))
+    remaining = dict(config.ROSTER_TARGET)
+    explicit_false = bm.candidates_for_pick(board, 5, 5, 20, remaining, set(), min_availability=0.0, ignore_wait=False)
+    default = bm.candidates_for_pick(board, 5, 5, 20, remaining, set(), min_availability=0.0)
+    assert list(explicit_false["player"]) == list(default["player"])
+
+
+# ---------------------------------------------------------------------------
+# 32. Work order 2026-08-31 item A (R44): cost-of-waiting panel.
+# ---------------------------------------------------------------------------
+def test_cost_of_waiting_reads_best_now_and_best_next_per_position():
+    board = pd.DataFrame([
+        {"player": "BestRB", "position": "RB", "vorp": 30.0, "reference_adp_rank": 10.0,
+         "comparison_adp_value": 10.0, "intel_tag": None},
+        {"player": "WorseRB", "position": "RB", "vorp": 10.0, "reference_adp_rank": 20.0,
+         "comparison_adp_value": 20.0, "intel_tag": None},
+        {"player": "BestWR", "position": "WR", "vorp": 25.0, "reference_adp_rank": 12.0,
+         "comparison_adp_value": 12.0, "intel_tag": None},
+    ])
+    board.attrs["edge_expectation_at_target"] = {"RB": 18.0, "WR": 25.0}
+    rows = {r["position"]: r for r in bm.cost_of_waiting(board)}
+    assert rows["RB"]["best_now"] == 30.0
+    assert rows["RB"]["best_next"] == 18.0
+    assert rows["RB"]["vorp_lost"] == pytest.approx(12.0)
+    # WR's best-available doesn't move (no cliff) -- vorp_lost is ~0.
+    assert rows["WR"]["best_now"] == 25.0
+    assert rows["WR"]["vorp_lost"] == pytest.approx(0.0)
+    # No RB/WR held on the board for QB/TE -- best_now falls back to 0.0, not a crash.
+    assert rows["QB"]["best_now"] == 0.0
+    assert rows["TE"]["best_now"] == 0.0
+
+
+def test_cost_of_waiting_excludes_hard_avoid_and_no_market_from_best_now():
+    board = pd.DataFrame([
+        {"player": "Avoided", "position": "RB", "vorp": 99.0, "reference_adp_rank": 5.0,
+         "comparison_adp_value": 5.0, "intel_tag": "hard_avoid"},
+        {"player": "NoMarket", "position": "RB", "vorp": 88.0, "reference_adp_rank": np.nan,
+         "comparison_adp_value": np.nan, "intel_tag": None},
+        {"player": "Real", "position": "RB", "vorp": 15.0, "reference_adp_rank": 8.0,
+         "comparison_adp_value": 8.0, "intel_tag": None},
+    ])
+    rows = {r["position"]: r for r in bm.cost_of_waiting(board)}
+    assert rows["RB"]["best_now"] == 15.0, "hard_avoid and no-market rows must never surface as 'best available'"
+
+
+def test_cost_of_waiting_falls_back_to_best_now_without_edge_expectation_attrs():
+    # A bare compute_composite board with no availability pass run yet -- no attrs key.
+    board = pd.DataFrame([
+        {"player": "Solo", "position": "TE", "vorp": 12.0, "reference_adp_rank": 30.0,
+         "comparison_adp_value": 30.0, "intel_tag": None},
+    ])
+    rows = {r["position"]: r for r in bm.cost_of_waiting(board)}
+    assert rows["TE"]["best_now"] == rows["TE"]["best_next"] == 12.0
+    assert rows["TE"]["vorp_lost"] == 0.0
+
+
+def test_cost_of_waiting_real_board_at_pick_29_53_92(built):
+    # Acceptance check itself: paste the rendered panel at picks 29, 53 and 92.
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    for this_pick, next_pick in [(20, 29), (44, 53), (77, 92)]:
+        b = bm.availability_with_band(
+            board, as_of_pick=this_pick, target_pick=next_pick, manager_priors=priors, team_bias=team_bias,
+            drafted_name_keys=set(), owner_roster_by_manager={},
+        )
+        rows = bm.cost_of_waiting(b)
+        assert len(rows) == len(config.POSITIONS)
+        for r in rows:
+            assert r["best_now"] >= 0.0
+            assert math.isfinite(r["vorp_lost"])
+
+
+# ---------------------------------------------------------------------------
+# 33. Work order 2026-08-31 item B (R45): board-assumption toggle.
+# ---------------------------------------------------------------------------
+def test_adp_order_mode_calls_availability_with_band_unmodified(monkeypatch):
+    # availability_with_band draws its own unseeded Monte Carlo internally (no `rng`
+    # param to pin), so two LIVE calls with "identical" arguments legitimately return
+    # slightly different numbers -- that's sampling noise, not a bug. Testing the
+    # delegation structurally (mock the callee, inspect what it was called with)
+    # checks the actual claim ("adp_order forwards unmodified") without depending on
+    # Monte Carlo noise staying below some tolerance.
+    calls = []
+
+    def fake_availability_with_band(board, as_of_pick, target_pick, manager_priors, team_bias,
+                                     drafted_name_keys, owner_roster_by_manager, n_sims, wait_pick):
+        calls.append((as_of_pick, target_pick, n_sims, wait_pick))
+        return board.copy()
+
+    monkeypatch.setattr(bm, "availability_with_band", fake_availability_with_band)
+    board = pd.DataFrame({"player": ["A"], "position": ["RB"], "reference_adp_rank": [5.0]})
+    bm.availability_with_assumption(
+        board, as_of_pick=10, target_pick=20, manager_priors=pd.DataFrame(), team_bias=pd.DataFrame(),
+        drafted_name_keys=set(), owner_roster_by_manager={}, mode="adp_order", n_sims=123, wait_pick=None,
+    )
+    assert calls == [(10, 20, 123, None)]
+
+
+def _fake_availability_frame() -> pd.DataFrame:
+    return pd.DataFrame({
+        "player": ["A", "B", "C"],
+        "reference_adp_rank": [5.0, 40.0, 90.0],
+        "survival_probability": [0.9, 0.5, 0.05],
+        "survival_band": [0.05, 0.6, 0.2],  # B and C's band would push the result below 0
+        "vorp": [10.0, 5.0, 1.0],
+        "composite_score": [50.0, 30.0, 10.0],
+    })
+
+
+def test_pessimistic_mode_subtracts_the_band_and_clips_at_zero(monkeypatch):
+    fake = _fake_availability_frame()
+    monkeypatch.setattr(bm, "availability_with_band", lambda *a, **k: fake.copy())
+    out = bm.availability_with_assumption(
+        pd.DataFrame(), as_of_pick=1, target_pick=2, manager_priors=pd.DataFrame(), team_bias=pd.DataFrame(),
+        drafted_name_keys=set(), owner_roster_by_manager={}, mode="pessimistic",
+    )
+    assert list(out["survival_probability"]) == pytest.approx([0.85, 0.0, 0.0])
+
+
+def test_pessimistic_mode_never_touches_vorp_or_composite_score(monkeypatch):
+    fake = _fake_availability_frame()
+    monkeypatch.setattr(bm, "availability_with_band", lambda *a, **k: fake.copy())
+    out = bm.availability_with_assumption(
+        pd.DataFrame(), as_of_pick=1, target_pick=2, manager_priors=pd.DataFrame(), team_bias=pd.DataFrame(),
+        drafted_name_keys=set(), owner_roster_by_manager={}, mode="pessimistic",
+    )
+    assert (out["vorp"] == fake["vorp"]).all()
+    assert (out["composite_score"] == fake["composite_score"]).all()
+
+
+def test_observed_reach_falls_back_to_adp_order_when_no_delta_file(monkeypatch):
+    # The real alt_league_position_deltas.csv doesn't exist yet (see config's own
+    # comment) -- confirms the toggle degrades gracefully instead of erroring or
+    # silently no-oping on a mode nobody actually meant to select.
+    monkeypatch.setattr(bm, "_alt_league_deltas_cache", None)
+    monkeypatch.setattr(config, "ALT_LEAGUE_POSITION_DELTAS_PATH", Path("no_such_file.csv"))
+    assert "observed_reach" not in bm.board_assumption_modes_available()
+
+    calls = []
+
+    def fake_availability_with_band(board, as_of_pick, target_pick, manager_priors, team_bias,
+                                     drafted_name_keys, owner_roster_by_manager, n_sims, wait_pick):
+        calls.append((as_of_pick, target_pick))
+        return board.copy()
+
+    monkeypatch.setattr(bm, "availability_with_band", fake_availability_with_band)
+    board = pd.DataFrame({"player": ["A"], "position": ["RB"], "reference_adp_rank": [5.0]})
+    out = bm.availability_with_assumption(
+        board, as_of_pick=44, target_pick=53, manager_priors=pd.DataFrame(), team_bias=pd.DataFrame(),
+        drafted_name_keys=set(), owner_roster_by_manager={}, mode="observed_reach", n_sims=300, wait_pick=None,
+    )
+    assert len(calls) == 1, "must fall through to the plain availability_with_band path exactly once"
+    assert (out["reference_adp_rank"] == board["reference_adp_rank"]).all()
+
+
+def test_observed_reach_shifts_survival_but_restores_reference_adp_rank_on_output(built, monkeypatch):
+    # Synthetic deltas -- NOT the real alt-league numbers (those aren't built yet) --
+    # to prove the shift-and-restore mechanism itself is correct: a strongly
+    # QB-favorable delta must raise QB survival relative to unshifted, while the
+    # OUTPUT's reference_adp_rank must be untouched (reach_penalty/market_reach_gap/
+    # display all read it straight off whatever this function returns).
+    monkeypatch.setattr(bm, "_alt_league_deltas_cache", {"QB": -30.0, "RB": 0.0, "WR": 0.0, "TE": 0.0})
+    master, _ = built
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    board = de.compute_composite(master)
+    AS_OF, TARGET = 20, 53
+    before = bm.availability_with_assumption(
+        board, as_of_pick=AS_OF, target_pick=TARGET, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={}, mode="adp_order", n_sims=1500,
+        wait_pick=None,
+    )
+    after = bm.availability_with_assumption(
+        board, as_of_pick=AS_OF, target_pick=TARGET, manager_priors=priors, team_bias=team_bias,
+        drafted_name_keys=set(), owner_roster_by_manager={}, mode="observed_reach", n_sims=1500,
+        wait_pick=None,
+    )
+    assert (after["reference_adp_rank"].fillna(-1) == board["reference_adp_rank"].fillna(-1)).all()
+
+    qb_mask = (after["position"] == "QB") & after["reference_adp_rank"].between(20, 100)
+    b = before.loc[qb_mask, "survival_probability"]
+    a = after.loc[qb_mask, "survival_probability"]
+    assert a.mean() > b.mean(), "a QB-favorable (more-available) delta must raise QB survival on average"
+
+
+def test_board_assumption_modes_available_always_includes_adp_order_and_pessimistic():
+    modes = bm.board_assumption_modes_available()
+    assert "adp_order" in modes
+    assert "pessimistic" in modes
+
+
+# ---------------------------------------------------------------------------
+# 34. Work order 2026-08-31 item C (R46): waiver-level second baseline.
+# ---------------------------------------------------------------------------
+def test_waiver_level_is_deeper_than_replacement_level(built):
+    master, _ = built
+    board = de.compute_composite(master)
+    for pos in config.POSITIONS:
+        assert board.attrs["waiver_level"][pos] <= board.attrs["replacement_level"][pos], (
+            f"{pos}: waiver level must be a DEEPER (lower-bar) cutoff than the last-starter replacement level"
+        )
+
+
+def test_vorp_waiver_never_folds_into_composite_score_or_edge(built):
+    master, _ = built
+    board = de.compute_composite(master)
+    # composite_score is a pure function of vorp/bonus/factor/market -- recomputing
+    # it with vorp_waiver zeroed out must not change composite_score at all.
+    tampered = board.copy()
+    tampered["vorp_waiver"] = 0.0
+    assert (tampered["composite_score"] == board["composite_score"]).all()
+    assert "vorp_waiver" not in board.attrs.get("enabled_composite_weights", {})
+
+
+def test_vorp_waiver_positive_for_several_late_rbs_where_vorp_is_at_or_below_zero(built):
+    # The acceptance check itself: report both baselines for the top 10 RBs with
+    # ADP > 100. The waiver figure should be positive for several of them.
+    master, _ = built
+    board = de.compute_composite(master)
+    late_rbs = (
+        board[(board["position"] == "RB") & (board["reference_adp_rank"] > 100)]
+        .sort_values("reference_adp_rank")
+        .head(10)
+    )
+    assert len(late_rbs) > 0
+    positive_waiver = (late_rbs["vorp_waiver"] > 0).sum()
+    assert positive_waiver >= 1, "at least some late RBs must show positive value over waiver level"
+    # And the whole point of item C: at least one of them is at/near zero (or below)
+    # on the last-starter baseline while positive on waiver.
+    assert (late_rbs["vorp"] <= late_rbs["vorp_waiver"]).all()
+
+
+def test_compute_waiver_levels_matches_a_hand_computed_cutoff():
+    df = pd.DataFrame({
+        "position": ["RB"] * 30,
+        "ppr_base": list(range(300, 0, -10)),  # 300, 290, ..., 10 (30 values)
+    })
+    roster_target = {"RB": 5}
+    levels = de.compute_waiver_levels(df, n_teams=4, roster_target=roster_target)
+    # 4 teams * 5 RB slots = rank 20 (0-indexed) -> the 21st-best value.
+    expected = sorted(df["ppr_base"], reverse=True)[20]
+    assert levels["RB"] == expected

@@ -28,76 +28,58 @@ toggled via `LAYERS["player_intel"]`.
 
 ## Intel table
 
+**Revised 2026-08-30 after VORP / cost-of-waiting analysis.** Three players were faded on
+grounds the model could not see, and the pick-20 slot changed position entirely.
+
 | player | position | pick_window | priority | tag | note |
 |---|---|---|---|---|---|
-| Puka Nacua | WR | 5 | 1 | target | Top 4 (Bijan/Gibbs/Chase/JSN) expected gone in some order |
-| Christian McCaffrey | RB | 5 | 2 | target | Only elite RB1 realistically reachable |
-| Amon-Ra St. Brown | WR | 5 | 3 | target | |
-| Chase Brown | RB | 20 | 1 | target | Doubted to last to 20 |
-| Omarion Hampton | RB | 20 | 2 | target | |
-| Ken Walker III | RB | 20 | 3 | target | **Nickname alias needed — no ADP joined from either source** |
-| A.J. Brown | WR | 20 | 4 | target | Trusty Veteran archetype: 30.6% injury rate |
-| Nico Collins | WR | 20 | 5 | target | |
-| A.J. Brown | WR | 29 | 1 | target | Hoped fallback if he slides |
-| Nico Collins | WR | 29 | 2 | target | |
-| Kyren Williams | RB | 29 | 3 | target | |
-| Chris Olave | WR | 29 | 4 | target | ADP above factors per grid divergence |
-| Josh Allen | QB | 29 | 5 | target | Only QB worth taking this early |
-| Brock Bowers | TE | 29 | 6 | target | |
-| Trey McBride | TE | 29 | 7 | target | |
-| Ladd McConkey | WR | 44 | 1 | target | |
-| Emeka Egbuka | WR | 44 | 2 | target | |
-| Jaylen Waddle | WR | 44 | 3 | target | Largest positive factor-grid divergence at WR |
-| DeVonta Smith | WR | 44 | 4 | target | |
-| Cam Skattebo | RB | 44 | 5 | target | No Sleeper ADP — verify status |
-| Garrett Wilson | WR | 44 | 6 | target | |
-| Zay Flowers | WR | 44 | 7 | target | |
-| Sam LaPorta | TE | 53 | — | watch | **Target tag removed 2026-08-24.** 16th by VORP in the Sleeper 48-72 band (15.59) and sharp edge -22, i.e. expensive here. Owner read: a top-6 TE needs to be the number 1 or 2 target on his own offence, and he is third behind Gibbs and Jameson Williams. Injury history. Pick 53 reopened to best available |
-| D'Andre Swift | RB | 53 | 3 | target | Preferred if available |
-| DJ Moore | WR | 53 | 2 | target | VORP 21.11, sharp +13. Best of the WR options once age fades are respected |
-| Rome Odunze | WR | 53 | 1 | target | VORP 22.51, sharp +13, Breakout Candidate. Best combined VORP-plus-sharp play in the band that is not age-faded |
-| Quinshon Judkins | RB | 53 | — | fade | Explicit dislike |
-| TreVeyon Henderson | RB | 53 | — | fade | Vrabel usage doubt |
-| Bhayshul Tuten | RB | 53 | — | fade | Workload uncertainty |
-| Terry McLaurin | WR | 53 | — | watch | **Highest VORP in the whole 48-72 band: 39.51, sharp +12.** Faded for age. Owner will reconsider. If the age fade is a reflex rather than a read, he is the pick at 53 |
-| Mike Evans | WR | 53 | — | fade | Age. VORP 26.51 but sharp only +4 |
-| Davante Adams | WR | 53 | — | watch | VORP 37.51, second highest in the band, but sharp -1 so no market edge. Same age question as McLaurin |
-| Jameson Williams | WR | 53 | — | fade | |
-| Carnell Tate | WR | 53 | — | fade | |
-| Jadarian Price | RB | 68 | 1 | target | If RB2 still empty |
-| Christian Watson | WR | 68 | 2 | target | Source arithmetic error — use recomputed score of 8 |
-| Marvin Harrison Jr. | WR | 68 | 3 | target | |
-| Parker Washington | WR | 68 | 4 | target | Only if Brian Thomas unavailable at 77 |
-| RJ Harvey | RB | 77 | 1 | target | If RB2 still empty |
-| Brian Thomas Jr. | WR | 77 | 2 | target | Positive factor divergence |
-| Rome Odunze | WR | 77 | 3 | target | |
-| Trevor Lawrence | QB | 92 | 1 | target | ⚠ Bottom of his ADP band — see Hurts/Stafford |
-| Dalton Kincaid | TE | 92 | 2 | target | TE1 fallback if LaPorta missed |
-| Michael Pittman Jr. | WR | 92 | 3 | target | |
-| Josh Downs | WR | 92 | 4 | target | Wants 5th WR by here |
-| George Kittle | TE | 101 | 1 | target | Take 2 of Kittle/Andrews/Kelce if no TE yet |
-| Mark Andrews | TE | 101 | 2 | target | |
-| Travis Kelce | TE | 101 | 3 | target | |
-| Josh Downs | WR | 101 | 4 | target | |
-| Xavier Worthy | WR | 116 | 1 | target | |
-| Jonathon Brooks | RB | 116 | 2 | target | ⚠ −2.1 composite; Warren/Stevenson better at same cost |
-| Rachaad White | RB | 116 | 3 | target | ⚠ −0.6 composite |
-| Brock Purdy | QB | 116 | 4 | target | QB2 — designated sacrifice per R11 |
-| Jared Goff | QB | 125 | 1 | target | |
-| Jalen Coker | WR | 125 | 2 | target | |
-| Rashid Shaheed | WR | 125 | 3 | target | |
-| Tyjae Spears | RB | 140 | 1 | target | ⚠ −10.0 composite |
-| Jordan Love | QB | 140 | 2 | target | |
-| Emmett Johnson | RB | 149 | 1 | target | |
-| Tank Dell | WR | 149 | 2 | target | ⚠ −28.6; no Sleeper ADP |
-| Kyler Murray | QB | 149 | 3 | target | |
-| Tyler Allgeier | RB | 164 | 1 | target | ⚠ −33.4 composite, worst on list |
-| Jalen Nailor | WR | 164 | 2 | target | |
-| Sam Darnold | QB | 164 | 3 | target | |
-| Oronde Gadsden II | TE | 173 | 1 | target | Super-late TE |
-| Brenton Strange | TE | 173 | 2 | target | |
+| Amon-Ra St. Brown | WR | 5 | 1 | target | 128.0 vorp, Prime WR1, 11.3% injury, 33.8% boom, factor 38 |
+| Puka Nacua | WR | 5 | 2 | target | 135.1 vorp if he falls. ADP 4, so roughly a coin flip at 5 |
+| Jaxon Smith-Njigba | WR | 5 | 3 | target | 127.5 vorp, ADP 5, same cohort rates as Amon-Ra |
+| Christian McCaffrey | RB | 5 | — | fade | **Faded 08-30.** Same vorp as the WRs (126.3) but injury flag `Concerned`, 21.7% injury vs 11.3%, 20.0% boom vs 33.8%, factor 25 vs 38. The 3-game RB haircut is positional, so his own flag never reaches `ppr_base` |
+| Brock Bowers | TE | 20 | 1 | target | **63.9 vorp, factor 36 — beats every WR available at 20.** Solves TE for the whole draft |
+| Trey McBride | TE | 20 | 2 | target | 63.0 vorp, factor 40. Interchangeable with Bowers |
+| DeVonta Smith | WR | 20 | 3 | target | 60.0 vorp, factor 32, Minimal Concern. Best WR at 20 on factors plus injury |
+| Rashee Rice | WR | 20 | — | hard_avoid | **Owner read: aDOT too low, KC running more after the Ken Walker signing.** Corroborated independently — Breakout Candidate archetype at 29.6% bust / 18.2% boom vs 12.7% / 33.8% for Prime WR1, and only 5.88 bonus estimate despite 32 more vorp than DeVonta, which is the reception-heavy signature |
+| Derrick Henry | RB | 20 | — | fade | 68.3 vorp but factor −1 and injury `Concerned` |
+| Breece Hall | RB | 29 | 1 | target | **71.7 vorp, factor 21, 27.9% boom.** Jets risk acknowledged and accepted; Clay's projections already assume a bad offence and he still out-projects backs on better teams |
+| Javonte Williams | RB | 29 | 2 | target | 58.7 vorp. The pessimistic-board fallback if Hall is reached |
+| Jeremiyah Love | RB | 29 | — | fade | **Faded 08-30.** 73.8 vorp but factor score 5 — the grid, which reads offensive PPG rank and QB grade, agrees with the owner about Arizona |
+| Josh Jacobs | RB | 29 | — | fade | 58.8 vorp but factor −7 |
+| Josh Allen | QB | 29 | — | fade | **Owner ruling 08-30:** cannot justify at 29 given the RB/WR disadvantage in rounds 2–3. Prefers 2 RB + 1 WR early with QB in the 8th or 9th |
+| Cam Skattebo | RB | 44 | 1 | target | **43.7 vorp — the one back that clears the round 4–6 dead zone** (band mean 17.6 RB vs 32.0 WR). ADP 43 against pick 44, so a coin flip; budget for the fallback |
+| Travis Etienne | RB | 44 | 2 | target | 41.9 vorp, ADP 44. The realistic fallback |
+| Quinshon Judkins | RB | 44 | 3 | target | 28.9 vorp. Previously faded; reinstated as the pessimistic-board fallback since RB2 must land by 44 |
+| Garrett Wilson | WR | 44 | 4 | target | 54.0 vorp if the RB slot is already filled |
+| Terry McLaurin | WR | 53 | 1 | target | **39.5 vorp, highest in the 48–72 band.** Age fade reconsidered; see review notes |
+| Rome Odunze | WR | 53 | 2 | target | Reach +13, Breakout Candidate |
+| DJ Moore | WR | 53 | 3 | target | Reach +13 |
+| Sam LaPorta | TE | 53 | — | watch | Target tag removed 08-24. **Moot if Bowers or McBride is taken at 20** |
+| Matthew Stafford | QB | 101 | 1 | target | 14.7 vorp. Best QB after the cliff; ADP 95 lands at pick 101 |
+| Brock Purdy | QB | 101 | 2 | target | 12.2 vorp, ADP 120 |
+| Jalen Hurts | QB | 101 | 3 | target | Only if he slides; alt league saw QBs go 18.5 picks later than Sleeper rank |
+| Trevor Lawrence | QB | 92 | — | fade | **Faded 08-30.** 27.9 composite, the weakest QB in his ADP neighbourhood. Stafford beats him by 5.2 |
+| Justin Herbert | QB | 92 | — | fade | Same reason, 26.7 |
+| Mark Andrews | TE | 125 | 1 | target | 2.3 vorp. TE2 is a bye-week body regardless of path |
+| Dallas Goedert | TE | 125 | 2 | target | 9.4 vorp, ADP 121 |
+| Jayden Higgins | WR | — | hard_avoid | **Torn ACL.** No ADP from either source; projections predate the injury |
+| Jonathon Brooks | RB | — | hard_avoid | Largest Sleeper-later gap on the board (+61). Verify status before ever reinstating |
 
----
+## Standing plan as of 2026-08-30
+
+Picks are 5, 20, 29, 44, 53, 68, 77, 92, 101, 116, 125, 140, 149, 164, 173, 188.
+
+**Shape:** WR at 5, TE1 at 20, RB1 at 29, RB2 at 44, WR at 53, WR at 68/77/92, QB1 at 101,
+WR at 116, TE2 at 125, RB darts at 140/149/164, QB2 at 173, K at 188.
+
+- **Five receivers land by pick 92**, meeting the round 9–10 target with a round in hand. That
+  slack is what pays for a round-2 tight end.
+- **Two real backs only**, at 29 and 44. Everything after is a dart at −30 vorp or worse
+  against last-starter replacement. Accepting that is the same decision as taking Bowers.
+- **W6 will fire** on a round-2 tight end. It was written for a plan being deliberately
+  abandoned — turn it off in setup rather than overriding it sixteen times.
+- **The decisive band is picks 20–68.** A turn costs 49–102 vorp there and 2.5–4.3 in rounds 7–8.
+- **The pessimistic board costs 65.4 vorp**, almost all of it at picks 5, 29, 44 and 53.
 
 ## Flagged for owner review
 
