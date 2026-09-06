@@ -36,7 +36,7 @@ grounds the model could not see, and the pick-20 slot changed position entirely.
 | Amon-Ra St. Brown | WR | 5 | 1 | target | 128.0 vorp, Prime WR1, 11.3% injury, 33.8% boom, factor 38 |
 | Puka Nacua | WR | 5 | 2 | target | 135.1 vorp if he falls. ADP 4, so roughly a coin flip at 5 |
 | Jaxon Smith-Njigba | WR | 5 | 3 | target | 127.5 vorp, ADP 5, same cohort rates as Amon-Ra |
-| Christian McCaffrey | RB | 5 | — | fade | **Faded 08-30.** Same vorp as the WRs (126.3) but injury flag `Concerned`, 21.7% injury vs 11.3%, 20.0% boom vs 33.8%, factor 25 vs 38. The 3-game RB haircut is positional, so his own flag never reaches `ppr_base` |
+| Christian McCaffrey | RB | — | — | hard_avoid | **Hard avoid 09-05 (promoted from fade).** Same vorp as the WRs (126.3) but injury flag `Concerned`, 21.7% injury vs 11.3%, 20.0% boom vs 33.8%, factor 25 vs 38. The 3-game RB haircut is positional, so his own flag never reaches `ppr_base` |
 | Brock Bowers | TE | 20 | 1 | target | **63.9 vorp, factor 36 — beats every WR available at 20.** Solves TE for the whole draft |
 | Trey McBride | TE | 20 | 2 | target | 63.0 vorp, factor 40. Interchangeable with Bowers |
 | DeVonta Smith | WR | 20 | 3 | target | 60.0 vorp, factor 32, Minimal Concern. Best WR at 20 on factors plus injury |
@@ -44,9 +44,9 @@ grounds the model could not see, and the pick-20 slot changed position entirely.
 | Derrick Henry | RB | 20 | — | fade | 68.3 vorp but factor −1 and injury `Concerned` |
 | Breece Hall | RB | 29 | 1 | target | **71.7 vorp, factor 21, 27.9% boom.** Jets risk acknowledged and accepted; Clay's projections already assume a bad offence and he still out-projects backs on better teams |
 | Javonte Williams | RB | 29 | 2 | target | 58.7 vorp. The pessimistic-board fallback if Hall is reached |
-| Jeremiyah Love | RB | 29 | — | fade | **Faded 08-30.** 73.8 vorp but factor score 5 — the grid, which reads offensive PPG rank and QB grade, agrees with the owner about Arizona |
+| Jeremiyah Love | RB | — | — | hard_avoid | **Hard avoid 09-05 (promoted from fade).** 73.8 vorp but factor score 5 — the grid, which reads offensive PPG rank and QB grade, agrees with the owner about Arizona |
 | Josh Jacobs | RB | 29 | — | fade | 58.8 vorp but factor −7 |
-| Josh Allen | QB | 29 | — | fade | **Owner ruling 08-30:** cannot justify at 29 given the RB/WR disadvantage in rounds 2–3. Prefers 2 RB + 1 WR early with QB in the 8th or 9th |
+| Josh Allen | QB | — | — | hard_avoid | **Hard avoid 09-05 (promoted from fade). Owner: stop suggesting him in round 1.** A ±10 fade cannot remove a 68.6-vorp player, and the old row was window-scoped to 29 so it never applied at pick 5. Original ruling 08-30: cannot justify at 29 given the RB/WR disadvantage in rounds 2–3. Prefers 2 RB + 1 WR early with QB in the 8th or 9th |
 | Cam Skattebo | RB | 44 | 1 | target | **43.7 vorp — the one back that clears the round 4–6 dead zone** (band mean 17.6 RB vs 32.0 WR). ADP 43 against pick 44, so a coin flip; budget for the fallback |
 | Travis Etienne | RB | 44 | 2 | target | 41.9 vorp, ADP 44. The realistic fallback |
 | Quinshon Judkins | RB | 44 | 3 | target | 28.9 vorp. Previously faded; reinstated as the pessimistic-board fallback since RB2 must land by 44 |
@@ -62,8 +62,8 @@ grounds the model could not see, and the pick-20 slot changed position entirely.
 | Justin Herbert | QB | 92 | — | fade | Same reason, 26.7 |
 | Mark Andrews | TE | 125 | 1 | target | 2.3 vorp. TE2 is a bye-week body regardless of path |
 | Dallas Goedert | TE | 125 | 2 | target | 9.4 vorp, ADP 121 |
-| Jayden Higgins | WR | — | hard_avoid | **Torn ACL.** No ADP from either source; projections predate the injury |
-| Jonathon Brooks | RB | — | hard_avoid | Largest Sleeper-later gap on the board (+61). Verify status before ever reinstating |
+| Jayden Higgins | WR | — | — | hard_avoid | **Torn ACL.** No ADP from either source; projections predate the injury |
+| Jonathon Brooks | RB | — | — | hard_avoid | Largest Sleeper-later gap on the board (+61). Verify status before ever reinstating |
 
 ## Standing plan as of 2026-08-30
 

@@ -23,6 +23,7 @@ Stages, in order:
   10.5. compute_sleeper_name_crosswalk            -- sleeper_name_key -> master name_key (work order 2026-08-24b item 1)
   11. compute_adp_source_offsets                  -- Sleeper vs NFFC divergence by position (work order item 1)
   12. validate_top_adp_coverage                     -- top-150-by-either-source join is a hard failure (work order item 2)
+  12.5. validate_fade_effectiveness                   -- warn when a `fade` tag can't change a pick (work order 2026-09-05 item 4)
   13. validate_and_report                             -- join_report.txt, pass/fail summary
 """
 from __future__ import annotations
@@ -38,7 +39,16 @@ import yaml
 from scipy.stats import lognorm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
 import config  # noqa: E402
+# draft_engine, for validate_fade_effectiveness only (work order 2026-09-05 item 4).
+# The build layer normally stays clear of app/, but the alternative here is a second
+# copy of the VORP/composite math living in this file purely to answer "would this
+# fade have moved him?" -- and a second copy of the valuation is exactly the drift
+# risk config.LAYERS' own comment warns about. draft_engine imports nothing but
+# config, numpy/pandas/scipy and the stdlib, so this stays acyclic and pulls in no
+# UI framework (the repo's `grep -l streamlit app/*.py` rule is unaffected).
+import draft_engine as de  # noqa: E402
 
 ALLOWED_POSITIONS = {"QB", "RB", "WR", "TE", "K"}
 
@@ -1187,6 +1197,91 @@ def validate_top_adp_coverage(
                 )
 
 
+def validate_fade_effectiveness(master: pd.DataFrame, report: JoinReport) -> pd.DataFrame:
+    """Warns when a `fade` tag cannot plausibly change which player gets drafted
+    (work order 2026-09-05 item 4).
+
+    This is the class of bug the 2026-09-05 intel rewrite was fixing, and the reason
+    it is worth a build-time check rather than a comment: `fade` is a BOUNDED nudge,
+    hard-capped at config.INTEL_NUDGE_CAP points on composite_score, so on a player
+    the projection already ranks at the top of his position it can only reorder him
+    against near neighbours -- it can never remove him. Measured on this build,
+    Christian McCaffrey's fade moved him ZERO places (RB3 before the nudge, RB3
+    after) and Josh Allen's left him at QB1 both ways. Neither tag was malformed,
+    neither was ignored, and neither did anything; the build said "0 hard failures"
+    and the tool kept suggesting both. `hard_avoid` is the tag with actual removal
+    power (a filter in top_recommendations/candidates_for_pick, never arithmetic),
+    and that is what the message points at.
+
+    The test is the OUTCOME, not the arithmetic: apply the fade, then ask whether the
+    player is still inside the top config.FADE_INERT_TIER_DEPTH[pos] of his own
+    position by composite_score -- i.e. still one of the players the owner intends to
+    draft there, so still an active recommendation. Position rank, not overall rank,
+    because that's the comparison the pick actually turns on: Allen's fade cost him
+    12 overall places and still left him the best quarterback available, which is
+    precisely the "stop suggesting him in round 1" complaint.
+
+    A note, not a `fail`: an inert fade is a mismatch between what a tag was meant to
+    express and what the tag can do, not a broken input. The build is still correct
+    and the board is still usable -- but nobody should have to re-derive the nudge
+    cap against a vorp number by hand to find out the tag is decorative.
+
+    Returns the per-fade-row diagnostic frame (empty when nothing is tagged `fade`),
+    so tests/test_core.py can assert on the numbers rather than parse the prose.
+    """
+    cols = ["player", "position", "vorp", "pos_rank_before", "pos_rank_after",
+            "overall_rank_before", "overall_rank_after", "inert"]
+    if "intel_tag" not in master.columns or not (master["intel_tag"] == "fade").any():
+        return pd.DataFrame(columns=cols)
+    if not config.layer_on("player_intel"):
+        # Bail BEFORE measuring rather than after. With the layer off compute_composite
+        # sets intel_nudge_pts to a flat 0.0, so "before" and "after" are the same
+        # frame and every top-of-position fade would measure as a zero-place move --
+        # technically true (nothing is applied at all) but it would report an inert
+        # TAG when the real story is a disabled LAYER, and it would fire for fades
+        # that are perfectly effective whenever the layer is switched back on.
+        report.note(
+            "player_intel: layer is off, so fade-effectiveness was not checked -- no intel "
+            "nudge reaches composite_score at all in this configuration"
+        )
+        return pd.DataFrame(columns=cols)
+
+    scored = de.compute_composite(master)
+    skill = scored[scored["position"].isin(config.POSITIONS)].copy()
+
+    # The counterfactual is "same board, this row's nudge removed" -- subtract the
+    # nudge back out rather than recomputing with the tag stripped, so both rankings
+    # come from one compute_composite call and can't disagree for any other reason.
+    before = skill["composite_score"] - skill["intel_nudge_pts"]
+    skill["pos_rank_before"] = before.groupby(skill["position"]).rank(ascending=False, method="min")
+    skill["pos_rank_after"] = skill.groupby("position")["composite_score"].rank(ascending=False, method="min")
+    skill["overall_rank_before"] = before.rank(ascending=False, method="min")
+    skill["overall_rank_after"] = skill["composite_score"].rank(ascending=False, method="min")
+
+    fades = skill[skill["intel_tag"] == "fade"].copy()
+    depth = fades["position"].map(config.FADE_INERT_TIER_DEPTH)
+    fades["inert"] = fades["pos_rank_after"] <= depth
+
+    for r in fades[fades["inert"]].itertuples():
+        pos_depth = config.FADE_INERT_TIER_DEPTH.get(r.position)
+        moved = (
+            "moves him 0 places"
+            if r.pos_rank_after == r.pos_rank_before
+            else f"moves him {int(r.pos_rank_after - r.pos_rank_before)} place(s)"
+        )
+        report.note(
+            f"player_intel: `fade` on '{r.player}' ({r.position}, vorp {r.vorp:.1f}) looks inert -- "
+            f"the +/-{config.INTEL_NUDGE_CAP:.0f}-point cap {moved} in the {r.position} composite "
+            f"ranking ({r.position}{int(r.pos_rank_before)} -> {r.position}{int(r.pos_rank_after)}), "
+            f"still inside the top {pos_depth} the roster targets at that position, so he stays an "
+            f"active recommendation. Overall rank {int(r.overall_rank_before)} -> "
+            f"{int(r.overall_rank_after)}. A bounded nudge cannot remove a player this highly "
+            f"projected; use `hard_avoid` if the intent is to stop the tool suggesting him"
+        )
+
+    return fades[cols].sort_values("pos_rank_after").reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1234,6 +1329,12 @@ def main() -> int:
     print("Computing ADP source offsets and validating top-150 join coverage...")
     compute_adp_source_offsets(master, report)
     validate_top_adp_coverage(master, ref_df, cmp_df, report)
+
+    print("Checking whether every `fade` tag can actually change a pick...")
+    inert = validate_fade_effectiveness(master, report)
+    if len(inert):
+        n_inert = int(inert["inert"].sum())
+        print(f"  {n_inert} of {len(inert)} fade tag(s) look inert -- see join_report.txt")
 
     report.write(config.JOIN_REPORT_PATH)
 

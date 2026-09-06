@@ -1,10 +1,10 @@
-Join report -- generated 2026-08-31T06:57:44
+Join report -- generated 2026-09-05T17:57:54
 ==============================================================================
 
 HARD FAILURES (0) -- these must be fixed before shipping
 ------------------------------------------------------------------------------
 
-NOTES / FLAGGED (133) -- unmatched names, coverage boundaries,
+NOTES / FLAGGED (130) -- unmatched names, coverage boundaries,
 low-sample flags. Never suppressed; eyeball before trusting a build.
 ------------------------------------------------------------------------------
   - priors/QB: rekeyed 'Cam Ward' to props' 'cameron ward' via NAME_ALIASES -- same real join key from here on, so both the team backfill and the player_master merge pick up the props row
@@ -15,114 +15,111 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - nffc_adp: rekeyed 'kenny gainwell' to 'kenneth gainwell' via NAME_ALIASES
   - nffc_adp: rekeyed 'chig okonkwo' to 'chigoziem okonkwo' via NAME_ALIASES
   - nffc_adp: rekeyed 'cam ward' to 'cameron ward' via NAME_ALIASES
-  - nffc_adp: 'Carter, Michael' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Coleman Jr., Kevin' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Henry Jr., Robert' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Humphrey, Lil'Jordan' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Tremble, Tommy' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Gore Jr., Frank' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Brown, Barion' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Dortch, Greg' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Lock, Drew' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Guerendo, Isaac' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Vaki, Sione' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Scott, Zavier' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'McNichols, Jeremy' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Chism III, Efton' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Howard, Will' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Shepard, Sterling' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Hill, Taysom' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Lance, Trey' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Bennett IV, Stetson' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Hunter, Jarquez' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'McLaughlin, Jaleel' has adp_n=1 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Lane, Jaylin' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Ewers, Quinn' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Rivers, Philip' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Horn Jr., Jimmy' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Abdullah, Ameer' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Cameron, Josh' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'King, Haynes' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Ekeler, Austin' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Ogunbowale, Dare' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Larison, Lan' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Dobbs, Joshua' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Royals, Jalen' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Fehoko, Simi' has adp_n=1 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Williams, Isaiah' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Miller, Jam' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Cooper, Darius' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Sinnott, Ben' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Robinson, Demarcus' has adp_n=5 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Delp, Oscar' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Heidenreich, Eli' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Musgrave, Luke' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Felton, Tai' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Bellinger, Daniel' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Hibner, Matt' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Joly, Justin' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Estime, Audric' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Thomas, Zavion' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Ali, Rasheen' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Westbrook-Ikhine, Nick' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Strand, Jack' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Browning, Jake' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Shipley, Will' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Jordan, Jawhar' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Strand, Jack' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Scott, Boston' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Kiner, Corey' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Chism III, Efton' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Brown, Camden' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Hill, Taysom' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Dillon, AJ' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Higgins, Jayden' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Cooper, Darius' has adp_n=1 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Thompson, Brenen' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Lambert-Smith, KeAndre' has adp_n=2 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Mafah, Phil' has adp_n=5 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Juszczyk, Kyle' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Daniels, CJ' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Williams, Savion' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Klare, Max' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Rudolph, Mason' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Taylor, Tyrod' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Walker, Devontez' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Stidham, Jarrett' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Mullens, Nick' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Klubnik, Cade' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Fant, Noah' has adp_n=3 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Metchie III, John' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'McCaffrey, Luke' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Whittington, Jordan' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Mariota, Marcus' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Rattler, Spencer' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Sanders, Ja'Tavion' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Austin III, Calvin' has adp_n=4 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Richardson Sr., Anthony' has adp_n=5 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Johnson, Tez' has adp_n=6 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Ertz, Zach' has adp_n=5 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Turpin, KaVontae' has adp_n=6 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Burks, Treylon' has adp_n=7 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Beckham Jr., Odell' has adp_n=8 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Allen, Kyle' has adp_n=6 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Brazzell II, Chris' has adp_n=5 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Johnson, Roschon' has adp_n=9 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Smith, Jonnu' has adp_n=7 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Huntley, Tyler' has adp_n=7 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Etienne, Trevor' has adp_n=8 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Bagent, Tyson' has adp_n=7 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Raymond, Kalif' has adp_n=8 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Benson, Malik' has adp_n=10 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Smith, Brashard' has adp_n=10 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Milton III, Joe' has adp_n=8 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'DeVito, Tommy' has adp_n=7 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Mills, Davis' has adp_n=8 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Neal, Devin' has adp_n=8 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Young, Colbie' has adp_n=10 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'All Jr., Erick' has adp_n=9 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Johnson, Kaleb' has adp_n=11 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Bond, Isaiah' has adp_n=9 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Wilson, Roman' has adp_n=10 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Zaccheaus, Olamide' has adp_n=10 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'McCarthy, J.J.' has adp_n=13 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Bourne, Kendrick' has adp_n=14 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Hopkins, DeAndre' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Oliver, Josh' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Rudolph, Mason' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Klare, Max' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Daniels, CJ' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Shepard, Sterling' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Sinnott, Ben' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Ali, Rasheen' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Mullens, Nick' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Goodson, Tyler' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Herbert, Khalil' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Price, Myles' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Rush, Cooper' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Abanikanda, Israel' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Royals, Jalen' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Milroe, Jalen' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Tremble, Tommy' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Dalton, Andy' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Mumpfield, Konata' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Tillman, Cedric' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Love, Daejon' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Watkins, Jordan' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Dortch, Greg' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Moore, Elijah' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Williams, Savion' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Ekeler, Austin' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Trubisky, Mitchell' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Taylor, J'Mari' has adp_n=1 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Hibner, Matt' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Humphrey, Lil'Jordan' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Milton III, Joe' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Metchie III, John' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Leonard, Riley' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Robinson, Demarcus' has adp_n=10 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Bellinger, Daniel' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Walker, Jahdae' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Bond, Isaiah' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Stidham, Jarrett' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Ewers, Quinn' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'McCaffrey, Luke' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Dobbs, Joshua' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Brown, Barion' has adp_n=4 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Rivers, Philip' has adp_n=2 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Sanders, Ja'Tavion' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Whittington, Jordan' has adp_n=5 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Mafah, Phil' has adp_n=7 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Felton, Tai' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Lock, Drew' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Klubnik, Cade' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Delp, Oscar' has adp_n=3 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Young, Colbie' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Allen, Kyle' has adp_n=4 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Howell, Sam' has adp_n=4 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Wentz, Carson' has adp_n=4 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Benson, Malik' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Neal, Devin' has adp_n=4 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'DeVito, Tommy' has adp_n=4 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Etienne, Trevor' has adp_n=4 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Guerendo, Isaac' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Huntley, Tyler' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Burks, Treylon' has adp_n=5 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Walker, Devontez' has adp_n=5 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Rattler, Spencer' has adp_n=5 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Knight, Bam' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Wilson, Roman' has adp_n=7 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Pickett, Kenny' has adp_n=5 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Turpin, KaVontae' has adp_n=5 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Raymond, Kalif' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Mills, Davis' has adp_n=5 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'McCarthy, J.J.' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Taylor, Tyrod' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Brazzell II, Chris' has adp_n=6 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Palmer, Joshua' has adp_n=8 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Lance, Trey' has adp_n=7 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Minshew II, Gardner' has adp_n=7 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Ertz, Zach' has adp_n=8 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'All Jr., Erick' has adp_n=10 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Heidenreich, Eli' has adp_n=11 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Bennett IV, Stetson' has adp_n=8 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Smith, Jonnu' has adp_n=9 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Estime, Audric' has adp_n=12 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Richardson Sr., Anthony' has adp_n=10 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Shipley, Will' has adp_n=9 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Mariota, Marcus' has adp_n=10 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Johnson, Tez' has adp_n=13 (< 15) -- shown but excluded from survival math
   - nffc_adp: 'Higbee, Tyler' has adp_n=11 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Palmer, Joshua' has adp_n=12 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Atwell, Tutu' has adp_n=13 (< 15) -- shown but excluded from survival math
-  - nffc_adp: 'Simpson, Ty' has adp_n=13 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Mims Jr., Marvin' has adp_n=11 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Bagent, Tyson' has adp_n=11 (< 15) -- shown but excluded from survival math
+  - nffc_adp: 'Zaccheaus, Olamide' has adp_n=14 (< 15) -- shown but excluded from survival math
   - college_bias_recall: 26 players mapped via model recall (not sourced from any data file -- Sleeper's board carries no college field). Schools covered: ['Alabama', 'Florida', 'Illinois', 'Iowa State', 'Ohio State']. No Florida State or UCF players in the current pool could be confidently matched, so Cailen's and Jayden's college-bias discount has zero eligible targets this year -- a real coverage gap, not a bug.
-  - player_intel: 'Jayden Higgins' row was missing its `priority` cell (pick_window's own '--' placeholder wasn't duplicated) -- inferred a blank priority so tag/note land correctly instead of shifting left
-  - player_intel: 'Jonathon Brooks' row was missing its `priority` cell (pick_window's own '--' placeholder wasn't duplicated) -- inferred a blank priority so tag/note land correctly instead of shifting left
-  - player_intel: 31 rows parsed from PLAYER-INTEL-2026.md ({'target': 20, 'fade': 7, 'hard_avoid': 3, 'watch': 1})
+  - player_intel: 31 rows parsed from PLAYER-INTEL-2026.md ({'target': 20, 'hard_avoid': 6, 'fade': 4, 'watch': 1})
   - manager_priors: 'Asa' has only 1 main-league draft on file -- widen variance
   - manager_priors: 'Asa' shows a >=3-round main-vs-alt divergence at QB or TE -- model as bimodal, do not average into a false middle
   - manager_priors: 'Colin' has only 1 main-league draft on file -- widen variance
@@ -138,5 +135,5 @@ low-sample flags. Never suppressed; eyeball before trusting a build.
   - TE: 48 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - WR: 141 players have implied-props coverage but no factor-grid row -- expected (analyst covers only the top tier per position), not a join failure
   - kickers: 18 K rows added from Sleeper ADP, no props/factor-grid coverage by design (R22) -- excluded from VORP and every route by construction
-  - sleeper_name_crosswalk: 229 Sleeper names mapped to a player_master row (7 Sleeper rows had no player_master match, e.g. players outside config.POSITIONS coverage); 2 of the 229 required a rewrite (normalization or alias difference) rather than an identity match; 0 resolved via Match Key only, after our own construction failed to match player_master
-  - adp_source_offsets (top 150 by Sleeper rank): QB -14.4 (n=18); RB -0.2 (n=44); TE -18.9 (n=16); WR +9.5 (n=57) -- positive means Sleeper ranks that position later than NFFC's mean pick
+  - sleeper_name_crosswalk: 244 Sleeper names mapped to a player_master row (13 Sleeper rows had no player_master match, e.g. players outside config.POSITIONS coverage); 2 of the 244 required a rewrite (normalization or alias difference) rather than an identity match; 0 resolved via Match Key only, after our own construction failed to match player_master
+  - adp_source_offsets (top 150 by Sleeper rank): QB -14.4 (n=18); RB +0.1 (n=44); TE -21.8 (n=17); WR +8.7 (n=57) -- positive means Sleeper ranks that position later than NFFC's mean pick

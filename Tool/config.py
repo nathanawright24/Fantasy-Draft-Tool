@@ -461,6 +461,26 @@ STARTING_LINEUP = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 2, "K": 1}
 FLEX_ELIGIBLE = {"RB", "WR", "TE"}
 
 # ---------------------------------------------------------------------------
+# Fade-inertness threshold (work order 2026-09-05 item 4). How deep into a position
+# a `fade` has to push a player before the tag can actually change which player gets
+# drafted. Derived from ROSTER_TARGET rather than being its own magic number: staying
+# inside the top ROSTER_TARGET[pos] of a position IS the definition of "the tool is
+# still actively recommending him", since that is exactly how many players at that
+# position the owner intends to draft.
+#
+# Why this needs checking at build time: `fade` is bounded at INTEL_NUDGE_CAP points
+# by design (see above -- do not raise it), so it can only reorder a player against
+# near neighbours, never remove him. On the 2026-09-05 board a -10 nudge moved
+# Christian McCaffrey ZERO places (RB3 before, RB3 after) and left Josh Allen at QB1
+# before AND after; both tags were honoured exactly as specified and changed nothing,
+# which is the worst kind of bug because the build reported success. Snapshotted with
+# dict() so the setup screen's live ROSTER_TARGET edits (draft_setup.apply_setup
+# mutates that dict in place) can't retroactively change what a build already
+# reported -- build/pipeline.py never applies a setup anyway.
+# ---------------------------------------------------------------------------
+FADE_INERT_TIER_DEPTH = dict(ROSTER_TARGET)
+
+# ---------------------------------------------------------------------------
 # Games-played haircut (spec Section 6.1 / SCHEMA doc) -- N games removed per position
 # ---------------------------------------------------------------------------
 GAMES_HAIRCUT = {"QB": 2, "WR": 2, "TE": 2, "RB": 3}

@@ -575,8 +575,11 @@ def test_intel_nudge_is_capped_and_toggleable(built):
 def test_hard_avoid_never_appears_in_recommendations(built):
     master, _ = built
     board = de.compute_composite(master)
-    # No real 2026 row is tagged hard_avoid -- inject one so the filter is actually
-    # exercised rather than trivially passing on an empty case.
+    # Inject the tag onto the single highest-composite row rather than relying on
+    # whoever happens to be tagged today: the six real hard_avoid rows the 2026-09-05
+    # board carries are covered separately (see the item-2 test at the end of this
+    # file), and this one has to keep exercising the filter against the very best
+    # player available even on a board where nothing is tagged at all.
     board = board.copy()
     top_player_idx = board["composite_score"].idxmax()
     board.loc[top_player_idx, "intel_tag"] = "hard_avoid"
@@ -1388,9 +1391,15 @@ def test_availability_method_config_comment_leads_with_capacity():
 # 17. Work order 2026-08-29b items 1-2 / 2026-08-29 item 0 (R42): stale-build guard,
 #     ADP Rank vs ADP conflation, Match Key as a validated crosswalk fallback.
 # ---------------------------------------------------------------------------
-def test_sleeper_adp_rank_column_used_not_the_adp_column():
+def test_sleeper_adp_rank_column_used_not_the_adp_column(monkeypatch):
     # The reported bug, reproduced directly: row 201 of the real 08-29 file is
     # ADP Rank 201, ADP 204 -- ingestion must keep them distinct.
+    #
+    # Pinned to that specific file because the assertion is about its specific
+    # contents, which means the staleness guard has to be widened for this test or it
+    # starts failing for an unrelated reason the moment a newer export lands (it did,
+    # on 2026-09-05). The guard's own behavior is covered by the two tests below.
+    monkeypatch.setattr(config, "ADP_STALENESS_MAX_DAYS", 10_000)
     report = pipeline.JoinReport()
     df = pipeline.ingest_sleeper_adp(report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-29.csv")
     row = df[df["player_display"] == "Braelon Allen"].iloc[0]
@@ -1415,9 +1424,16 @@ def test_staleness_guard_fires_on_the_old_file_not_the_new_one():
     assert old_report.hard_failures
     assert "days old" in old_report.hard_failures[0]
 
+    # "the new one" resolves through latest_sleeper_adp_raw_path rather than naming a
+    # date: this half of the test used to pin sleeper_adp_ppr_2026-08-29.csv, which
+    # started failing on 2026-09-05 for the most literal reason possible -- the file
+    # it called "new" had become stale. Asking the guard about whatever export the
+    # build would actually USE is both what the test meant and permanently true.
     new_report = pipeline.JoinReport()
-    pipeline.ingest_sleeper_adp(new_report, path=config.DATA_RAW / "sleeper_adp_ppr_2026-08-29.csv")
-    assert not new_report.hard_failures
+    pipeline.ingest_sleeper_adp(new_report, path=config.latest_sleeper_adp_raw_path())
+    assert not new_report.hard_failures, (
+        "the newest Sleeper export on disk is itself stale -- re-scrape before drafting"
+    )
 
 
 def test_staleness_guard_is_a_real_config_toggle(monkeypatch):
@@ -1897,16 +1913,41 @@ def test_missing_both_markets_counts_match_the_real_build(built):
     missing_both = int((no_ref & no_cmp).sum())
     missing_only_sleeper = int((no_ref & ~no_cmp).sum())
     missing_only_nffc = int((~no_ref & no_cmp).sum())
-    # Real, measured counts on the current build (2026-08-29 files) -- pinned so a
+    # Real, measured counts on the current build (2026-09-05 files) -- pinned so a
     # future data refresh that silently changes join coverage is caught, not just
     # "some number greater than zero."
-    assert missing_both == 86
-    assert missing_only_sleeper == 120
+    #
+    # Re-pinned from 86/120/18 (the 2026-08-29 files) after the 09-05 refresh, having
+    # checked the movement rather than just accepting it. Sleeper coverage IMPROVED:
+    # that export went from 239 to 281 rows, so 17 players moved out of
+    # missing_only_sleeper and both-present rose 211 -> 226. missing_both rose by 2
+    # because the new NFFC export dropped two players the previous one carried, and
+    # neither has a Sleeper ADP either. Both are deep bench chaff -- the whole
+    # missing-both set now tops out at 54 ppr_base (Nick Westbrook-Ikhine), nowhere
+    # near a startable projection -- and validate_top_adp_coverage still reports zero
+    # hard failures, so nothing inside the top 150 of either source is affected.
+    assert missing_both == 88
+    assert missing_only_sleeper == 103
     assert missing_only_nffc == 18
+    # Jayden Higgins used to be this section's worked example of no_market: torn ACL,
+    # no ADP from either source. The 2026-09-05 NFFC export prices him at 241.14, so
+    # he is now partial_market, not no_market, and the no_market filter no longer
+    # touches him at all -- only his `hard_avoid` tag keeps him out of suggestions
+    # (covered by the item-2 test at the end of this file). Asserted rather than
+    # deleted because the note in 2026/PLAYER-INTEL-2026.md still says "no ADP from
+    # either source", and this is the line that will fail if that stops being merely
+    # out of date and starts mattering.
     higgins = master[master["player"] == "Jayden Higgins"]
     assert len(higgins) == 1
-    assert pd.isna(higgins.iloc[0]["reference_adp_rank"])
-    assert pd.isna(higgins.iloc[0]["comparison_adp_value"])
+    assert pd.isna(higgins.iloc[0]["reference_adp_rank"]), "still no Sleeper ADP"
+    assert not pd.isna(higgins.iloc[0]["comparison_adp_value"]), "NFFC now prices him"
+    assert higgins.iloc[0]["intel_tag"] == "hard_avoid"
+
+    # A no_market example chosen from the data rather than named, so the next export
+    # that reprices somebody can't quietly leave this case untested.
+    no_market = master[no_ref & no_cmp]
+    assert bm.missing_both_markets(no_market.iloc[0]) is True
+    assert bm.market_coverage_flag(no_market.iloc[0]) == "no_market"
 
 
 def test_missing_both_markets_and_market_coverage_flag():
@@ -2766,3 +2807,209 @@ def test_compute_waiver_levels_matches_a_hand_computed_cutoff():
     # 4 teams * 5 RB slots = rank 20 (0-indexed) -> the 21st-best value.
     expected = sorted(df["ppr_base"], reverse=True)[20]
     assert levels["RB"] == expected
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-05 work order. Two things this session's ADP refresh changed the shape of:
+#
+#   items 2/4 -- `fade` is a BOUNDED nudge and therefore powerless against a player
+#   the projection ranks at the top of his position. Josh Allen and Christian
+#   McCaffrey were both tagged `fade`, both honoured exactly as specified, and both
+#   kept getting recommended (Allen stayed QB1 and McCaffrey did not move a single
+#   place). They were promoted to `hard_avoid`; pipeline.validate_fade_effectiveness
+#   is what stops the same silent no-op recurring on a future board.
+#
+#   item 3 -- scripts/parse_sleeper_adp_paste.py replaced hand transcription of the
+#   ~300-row Sleeper ADP page. Name-join failure is this project's stated primary
+#   correctness risk, so the parser that produces the join keys gets a round-trip
+#   test against the real shipped CSV rather than a synthetic fixture only.
+# ---------------------------------------------------------------------------
+def _fade_diagnostics(master, fade_name_keys):
+    """Re-tag `fade_name_keys` as `fade` and run the validator over the real board."""
+    counterfactual = master.copy()
+    counterfactual.loc[counterfactual["name_key"].isin(fade_name_keys), "intel_tag"] = "fade"
+    report = pipeline.JoinReport()
+    return pipeline.validate_fade_effectiveness(counterfactual, report), report
+
+
+def test_validate_fade_effectiveness_flags_a_fade_that_cannot_change_the_pick(built):
+    # The two rows that motivated item 4, replayed as `fade` on the real board.
+    master, _ = built
+    diag, report = _fade_diagnostics(master, ["josh allen", "christian mccaffrey"])
+    flagged = diag[diag["inert"]]["player"].tolist()
+    assert "Josh Allen" in flagged, "a fade leaving him the top QB on the board must be flagged"
+    assert "Christian McCaffrey" in flagged
+
+    allen = diag[diag["player"] == "Josh Allen"].iloc[0]
+    assert allen["pos_rank_before"] == allen["pos_rank_after"] == 1, (
+        "the whole point: the nudge does not move him within his own position"
+    )
+    cmc = diag[diag["player"] == "Christian McCaffrey"].iloc[0]
+    assert cmc["pos_rank_after"] - cmc["pos_rank_before"] == 0
+
+    notes = [n for n in report.notes if "looks inert" in n]
+    assert len(notes) == len(flagged)
+    assert all("hard_avoid" in n for n in notes), "the warning must name the tag that actually removes a player"
+
+
+def test_validate_fade_effectiveness_is_silent_for_the_boards_real_fades(built):
+    # The four fades left in place on 2026-09-05 (Henry, Jacobs, Lawrence, Herbert)
+    # each drop out of the top ROSTER_TARGET at their position, so each one can still
+    # change which player gets taken. A check that fired on those would be noise.
+    master, _ = built
+    report = pipeline.JoinReport()
+    diag = pipeline.validate_fade_effectiveness(master, report)
+    assert len(diag) > 0, "no `fade` rows on the board -- this test would pass vacuously"
+    assert not diag["inert"].any(), f"unexpectedly inert: {diag[diag['inert']]['player'].tolist()}"
+    assert not [n for n in report.notes if "looks inert" in n]
+
+
+def test_validate_fade_effectiveness_returns_empty_without_any_fade_rows(built):
+    master, _ = built
+    stripped = master.copy()
+    stripped.loc[stripped["intel_tag"] == "fade", "intel_tag"] = np.nan
+    report = pipeline.JoinReport()
+    assert pipeline.validate_fade_effectiveness(stripped, report).empty
+    assert not report.notes
+
+
+def test_hard_avoid_rows_on_the_real_board_never_surface_as_candidates_or_route_legs(built):
+    """Work order 2026-09-05 item 2's acceptance check, at a sample of owner picks.
+
+    Deliberately the strict version: the hard_avoid players are pinned undrafted and
+    the owner's roster is held empty, so neither availability nor the per-position
+    `shape` cap can be the thing that excludes them. The control run (same board, tag
+    blanked) is what proves the hard_avoid filter is doing the work -- without it a
+    zero count could just mean nobody was ever going to be suggested anyway.
+    """
+    master, _ = built
+    master = bm.apply_kicker_slide(master)
+    avoided = master[master["intel_tag"] == "hard_avoid"]
+    assert len(avoided) > 0, "no hard_avoid rows on the board -- this test would pass vacuously"
+    avoided_keys = set(avoided["name_key"])
+    avoided_players = set(avoided["player"])
+
+    priors = pd.read_csv(config.MANAGER_PRIORS_PATH)
+    team_bias = pd.read_csv(config.TEAM_BIAS_PATH)
+    picks = bm.owner_pick_numbers()
+    adp_order = master.dropna(subset=["reference_adp_rank"]).sort_values("reference_adp_rank")
+
+    def surfaced(pick, wait, blank_intel):
+        src = master.copy()
+        if blank_intel:
+            src.loc[src["name_key"].isin(avoided_keys), "intel_tag"] = np.nan
+        drafted = [k for k in adp_order["name_key"] if k not in avoided_keys][: pick - 1]
+        board = de.compute_composite(src)
+        board = bm.availability_with_assumption(
+            board, as_of_pick=pick, target_pick=pick, manager_priors=priors, team_bias=team_bias,
+            drafted_name_keys=set(drafted), owner_roster_by_manager={}, wait_pick=wait, n_sims=200,
+        )
+        if "survival_probability_wait" not in board.columns:
+            board["survival_probability_wait"] = board["survival_probability"]
+        seen = set(bm.candidates_for_pick(
+            board, pick, pick, wait, dict(config.ROSTER_TARGET), set(), min_availability=0.0
+        ).get("player", []))
+        roster = de.RosterState(picks=[], current_round=config.round_of_pick(pick), current_overall_pick=pick)
+        seen |= set(de.top_recommendations(board, roster, n=10).get("player", []))
+        for route in bm.build_routes(board, {}, pick, on_clock=True):
+            seen.add(route["anchor"]["player"])
+            seen |= {leg["player"] for leg in route["legs"]}
+        return seen & avoided_players
+
+    # First, middle and last owner pick -- enough to cover round 1, the mid-rounds and
+    # the tail without paying for all sixteen simulations in the test suite.
+    sampled = [picks[0], picks[len(picks) // 2], picks[-1]]
+    control_total = 0
+    for pick in sampled:
+        wait = next((p for p in picks if p > pick), pick + config.N_TEAMS)
+        assert not surfaced(pick, wait, blank_intel=False), f"a hard_avoid player surfaced at pick {pick}"
+        control_total += len(surfaced(pick, wait, blank_intel=True))
+    assert control_total > 0, "control run surfaced nobody either -- the filter was never actually exercised"
+
+
+def _paste_parser():
+    """scripts/parse_sleeper_adp_paste.py lives in the parent workspace, not Tool/, so
+    it is loaded by path rather than imported -- it is a once-a-season input tool, not
+    part of the package."""
+    import importlib.util
+
+    path = config.FANTASY_ROOT / "scripts" / "parse_sleeper_adp_paste.py"
+    spec = importlib.util.spec_from_file_location("parse_sleeper_adp_paste", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_paste(tmp_path, lines):
+    paste = tmp_path / "paste.txt"
+    paste.write_text("\n".join(lines), encoding="utf-8")
+    return paste
+
+
+def test_paste_parser_reproduces_the_shipped_sleeper_adp_csv(tmp_path):
+    """Rebuild the paste the current raw CSV came from and re-parse it. Guards the
+    join keys specifically: `Match Key` and `Player` are what player_master joins on,
+    and `ADP Rank` is derived from ADP rather than read off the page (the page's own
+    leading number disagrees -- Nacua is listed 2nd at ADP 4)."""
+    parser = _paste_parser()
+    shipped = pd.read_csv(config.latest_sleeper_adp_raw_path())
+
+    lines = []
+    for _, r in shipped.iterrows():
+        lines += [
+            str(r["ADP Rank"]), f"{r['Team']} logo", r["Player"], r["Team"],
+            r["Pos Rank"], f"{r['ADP']:g}\t{r['Pos Rank']}", "+1",
+        ]
+    parsed = pd.DataFrame(parser.parse(_write_paste(tmp_path, lines)))
+    parsed = parsed.sort_values("ADP").reset_index(drop=True)
+    for col in ("Player", "Team", "Pos", "Pos Rank", "Match Key", "ADP", "ADP Rank"):
+        pd.testing.assert_series_equal(
+            parsed[col], shipped[col], check_names=False, check_dtype=False,
+            obj=f"round-tripped {col}",
+        )
+
+
+def test_paste_parser_derives_adp_rank_from_adp_not_from_the_pages_own_ranking(tmp_path):
+    parser = _paste_parser()
+    # The page's leading number says Nacua is 2nd; his ADP is 4, behind Chase's 3.
+    lines = [
+        "1", "DET logo", "Jahmyr Gibbs", "DET", "RB1", "1\tRB1", "+1",
+        "2", "LAR logo", "Puka Nacua", "LAR", "WR1", "4\tWR2", "+2",
+        "3", "CIN logo", "Ja'Marr Chase", "CIN", "WR2", "3\tWR1", "N/A",
+    ]
+    rows = {r["Player"]: r for r in parser.parse(_write_paste(tmp_path, lines))}
+    assert len(rows) == 3
+    assert rows["Ja'Marr Chase"]["ADP Rank"] == 2, "ADP 3 must outrank ADP 4"
+    assert rows["Puka Nacua"]["ADP Rank"] == 3
+    # Pos Rank comes off the market column, not the page's own ordering.
+    assert rows["Puka Nacua"]["Pos Rank"] == "WR2"
+    # And the join key the pipeline actually merges on -- apostrophe stripped.
+    assert rows["Ja'Marr Chase"]["Match Key"] == "jamarr chase|WR"
+
+
+def test_paste_parser_skips_malformed_blocks_instead_of_writing_a_bad_row(tmp_path, capsys):
+    parser = _paste_parser()
+    lines = [
+        "1", "DET logo", "Jahmyr Gibbs", "DET", "RB1", "1\tRB1", "+1",
+        "2", "SF logo", "Broken Row", "SF", "not-a-position", "9\tWR9", "+1",
+        "3", "KC logo", "No ADP Here", "KC", "WR5", "n/a\tWR5", "+1",
+    ]
+    rows = parser.parse(_write_paste(tmp_path, lines))
+    assert [r["Player"] for r in rows] == ["Jahmyr Gibbs"]
+    assert "2 block(s) skipped" in capsys.readouterr().out, "skipped blocks must be reported, never silent"
+
+
+def test_validate_fade_effectiveness_does_not_fire_when_the_intel_layer_is_off(built):
+    # With the layer off no nudge is applied, so "before" and "after" are identical
+    # and a naive implementation would report every top-of-position fade as inert.
+    master, _ = built
+    saved = config.LAYERS["player_intel"]["applies"]
+    try:
+        config.LAYERS["player_intel"]["applies"] = False
+        report = pipeline.JoinReport()
+        diag = pipeline.validate_fade_effectiveness(master, report)
+    finally:
+        config.LAYERS["player_intel"]["applies"] = saved
+    assert diag.empty
+    assert not [n for n in report.notes if "looks inert" in n]
+    assert any("layer is off" in n for n in report.notes), "the skip must be visible, not silent"
